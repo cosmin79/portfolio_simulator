@@ -64,7 +64,9 @@ def simulate_portfolio(
     initial_investment: float,
     monthly_contribution: float,
     rebalance_annually: bool = False,
-) -> tuple[pd.Series, pd.Series]:
+    ddca_thresholds: dict[str, float] | None = None,
+    risk_free_rate: float = 0.04,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
     Simulate a portfolio with an initial lump-sum investment and fixed monthly DCA.
 
@@ -75,12 +77,25 @@ def simulate_portfolio(
     weights on the first trading day of each new calendar year, before that
     month's contribution is deployed.
 
+    Double DCA mode (ddca_thresholds)
+    ----------------------------------
+    Pass a dict mapping ticker → drawdown threshold (e.g. {"SPY": 0.10}).
+    For each DDCA-enabled ticker, every month:
+      1. Half the normal contribution is always invested immediately.
+      2. The other half is added to a per-ticker cash reserve.
+      3. If the current price is ≥ (1 − threshold) × 52-week high → no extra draw.
+      4. If the current price is  < (1 − threshold) × 52-week high →
+         draw min(full_contrib, reserve) extra from the reserve and invest it.
+         Maximum total deployed that month = 1.5 × normal contribution.
+    The reserve earns `risk_free_rate` daily while parked.
+    Tickers without a threshold entry use regular DCA.
+    Negative-weight (short) tickers always use regular DCA regardless.
+
     Returns
     -------
-    portfolio_values : pd.Series
-        Daily market value of the portfolio.
-    total_invested : pd.Series
-        Cumulative cash invested (lump-sum + contributions) at each date.
+    portfolio_values : pd.Series  — daily market value of shares + reserve
+    total_invested   : pd.Series  — cumulative cash committed (lump-sum + contributions)
+    reserve_values   : pd.Series  — daily total value sitting in the cash reserve
     """
     tickers = list(weights.keys())
     w = np.array([weights[t] for t in tickers], dtype=float)
@@ -90,38 +105,81 @@ def simulate_portfolio(
     prices_arr = prices_sub.values
     dates = prices_sub.index
 
+    daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
+
+    # Per-ticker cash reserves (only for DDCA tickers with positive weight)
+    ddca = ddca_thresholds or {}
+    reserves: dict[str, float] = {
+        t: 0.0 for t, wt in zip(tickers, w) if t in ddca and wt > 0
+    }
+
     # Buy initial allocation at first-day open (approximated by first close)
     shares = initial_investment * w / prices_arr[0]
     total_invested_now = initial_investment
     prev_month = dates[0].to_period("M")
     prev_year  = dates[0].year
 
-    values: list[float] = []
+    values:   list[float] = []
     invested: list[float] = []
+    res_vals: list[float] = []
 
     for i in range(len(dates)):
+        # Grow reserves by risk-free rate each day
+        for t in reserves:
+            reserves[t] *= (1 + daily_rf)
+
         if i > 0:
             curr_month = dates[i].to_period("M")
             curr_year  = dates[i].year
             if curr_month != prev_month:
                 # Annual rebalance on first trading day of a new year
+                # (shares only; reserves are managed independently)
                 if rebalance_annually and curr_year != prev_year:
                     port_val = float(np.dot(shares, prices_arr[i]))
                     shares = port_val * w / prices_arr[i]
 
-                # Monthly contribution
-                new_shares = monthly_contribution * w / prices_arr[i]
-                shares = shares + new_shares
+                # Monthly contributions per ticker
+                for j, t in enumerate(tickers):
+                    ticker_contrib = monthly_contribution * w[j]
+
+                    if t in reserves:  # DDCA-enabled long ticker
+                        half = ticker_contrib / 2.0
+
+                        # Park half in reserve
+                        reserves[t] += half
+
+                        # Check 52-week high (up to 252 trading days back)
+                        lookback_start = max(0, i - 251)
+                        high_52w = prices_arr[lookback_start : i + 1, j].max()
+                        current_price = prices_arr[i, j]
+                        threshold = ddca[t]
+
+                        if current_price < (1.0 - threshold) * high_52w:
+                            # Below threshold → double-down: draw extra from reserve
+                            from_reserve = min(ticker_contrib, reserves[t])
+                            reserves[t] -= from_reserve
+                            invest_amount = half + from_reserve
+                        else:
+                            invest_amount = half
+
+                        shares[j] += invest_amount / prices_arr[i, j]
+
+                    else:  # regular DCA (including short/leveraged tickers)
+                        shares[j] += ticker_contrib / prices_arr[i, j]
+
                 total_invested_now += monthly_contribution
                 prev_month = curr_month
                 prev_year  = curr_year
 
-        values.append(float(np.dot(shares, prices_arr[i])))
+        total_reserve = sum(reserves.values())
+        values.append(float(np.dot(shares, prices_arr[i])) + total_reserve)
         invested.append(total_invested_now)
+        res_vals.append(total_reserve)
 
     return (
-        pd.Series(values, index=dates, name="Portfolio Value"),
+        pd.Series(values,   index=dates, name="Portfolio Value"),
         pd.Series(invested, index=dates, name="Total Invested"),
+        pd.Series(res_vals, index=dates, name="Reserve"),
     )
 
 

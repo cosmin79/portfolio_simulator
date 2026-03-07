@@ -37,18 +37,27 @@ PORTFOLIOS = [
     {
         "name": "All weather portfolio",
         "weights": {
-            "VT":  0.603,   # S&P 500 ETF
+            "VT":  0.603,
             "BND": 0.402,
             "BIL": -0.335,
-            "GCC":  0.165,   # Total Bond Market ETF
-            "GLD":  0.165,   # Gold ETF
+            "GCC":  0.165,
+            "GLD":  0.165,
+        },
+        # Optional: per-ticker Double DCA thresholds.
+        # Tickers listed here use DDCA; others use regular DCA.
+        # Value = how far below 52-week high triggers the double-down (e.g. 0.10 = 10%).
+        "ddca_thresholds": {
+            "VT":  0.10,
+            "GCC": 0.15,
+            "GLD": 0.10,
         },
     },
     {
         "name": "All world",
         "weights": {
-            "VT":  1.0,   # Total World stock market
+            "VT":  1.0,
         },
+        # No ddca_thresholds key → plain DCA for all tickers
     },
 ]
 
@@ -56,7 +65,7 @@ START_YEAR           = 2007     # simulation start (data availability may push t
 INITIAL_INVESTMENT   = 100_000  # USD lump-sum at start
 MONTHLY_CONTRIBUTION = 2000     # USD added every month
 RISK_FREE_RATE       = 0.04    # annual, e.g. 0.04 = 4 %
-REBALANCE_ANNUALLY   = False     # rebalance to target weights each January
+REBALANCE_ANNUALLY   = False    # rebalance to target weights each January
 
 # ===========================================================================
 # — nothing below here needs changing —
@@ -118,9 +127,11 @@ def run() -> None:
     # ------------------------------------------------------------ simulation
     results = []
     for p in PORTFOLIOS:
-        vals, invested = simulate_portfolio(
+        vals, invested, reserve = simulate_portfolio(
             prices, p["weights"], INITIAL_INVESTMENT, MONTHLY_CONTRIBUTION,
             rebalance_annually=REBALANCE_ANNUALLY,
+            ddca_thresholds=p.get("ddca_thresholds"),
+            risk_free_rate=RISK_FREE_RATE,
         )
         rets = returns_from_simulation(vals, invested)
         metrics = calculate_metrics(vals, invested, rets, RISK_FREE_RATE)
@@ -131,8 +142,10 @@ def run() -> None:
         results.append({
             "name":        p["name"],
             "weights":     p["weights"],
+            "ddca":        p.get("ddca_thresholds") or {},
             "values":      vals,
             "invested":    invested,
+            "reserve":     reserve,
             "returns":     rets,
             "metrics":     metrics,
             "annual_rets": annual_rets,
@@ -164,13 +177,18 @@ def run() -> None:
     # Portfolio value
     for r, color in zip(results, COLORS):
         ax_val.plot(r["values"].index, r["values"], label=r["name"], color=color, lw=2)
+        if r["reserve"].max() > 0:
+            ax_val.fill_between(
+                r["reserve"].index, 0, r["reserve"],
+                alpha=0.12, color=color, label=f"{r['name']} — reserve",
+            )
     ax_val.plot(
         results[0]["invested"].index, results[0]["invested"],
         label="Total Invested", color="gray", lw=1.3, linestyle="--", alpha=0.75,
     )
     ax_val.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
     ax_val.set_ylabel("Value (USD)")
-    ax_val.set_title("Portfolio Value Over Time")
+    ax_val.set_title("Portfolio Value Over Time  (shaded band = DDCA cash reserve)")
     ax_val.legend()
 
     # Annual returns per portfolio

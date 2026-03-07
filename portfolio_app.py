@@ -58,7 +58,10 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
     """
     st.sidebar.subheader(label)
 
-    default_df = pd.DataFrame(default_tickers, columns=["Ticker", "Weight"])
+    default_df = pd.DataFrame(
+        [(t, w, None) for t, w in default_tickers],
+        columns=["Ticker", "Weight", "DDCA %"],
+    )
     edited = st.sidebar.data_editor(
         default_df,
         num_rows="dynamic",
@@ -68,16 +71,25 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
             "Ticker": st.column_config.TextColumn("Ticker", width="small"),
             "Weight": st.column_config.NumberColumn(
                 "Weight",
-                min_value=-10.0,   # allow short / leveraged legs
+                min_value=-10.0,
                 max_value=10.0,
                 step=0.01,
                 format="%.3f",
-                help="Negative = short/borrowed position (e.g. -0.335 for BIL to model leverage cost)",
+                help="Negative = short/borrowed position",
+            ),
+            "DDCA %": st.column_config.NumberColumn(
+                "DDCA %",
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                format="%.0f",
+                help="Double-DCA threshold: % below 52-week high that triggers double-down. Leave blank for regular DCA.",
             ),
         },
     )
 
-    weights_raw = {}
+    weights_raw: dict[str, float] = {}
+    ddca_raw: dict[str, float] = {}
     for _, row in edited.iterrows():
         ticker = str(row["Ticker"]).strip().upper()
         if not ticker or ticker == "NAN":
@@ -85,39 +97,37 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
         weight = float(row["Weight"]) if not pd.isna(row["Weight"]) else 0.0
         if weight != 0.0:
             weights_raw[ticker] = weight
+        ddca_val = row.get("DDCA %")
+        if ddca_val is not None and not pd.isna(ddca_val) and float(ddca_val) > 0:
+            ddca_raw[ticker] = float(ddca_val) / 100.0
 
     if not weights_raw:
         st.sidebar.error(f"{label}: no valid weights entered.")
-        return weights_raw
+        return weights_raw, {}
 
     net = sum(weights_raw.values())
-    gross = sum(abs(w) for w in weights_raw.values())
     is_leveraged = any(w < 0 for w in weights_raw.values())
 
     if abs(net - 1.0) > 1e-3:
         if is_leveraged:
-            # Cannot safely auto-normalise a leveraged portfolio — the user must fix it
             st.sidebar.error(
                 f"{label}: net weights sum to **{net:.4f}** (must be 1.0). "
-                f"Adjust your weights manually — auto-normalisation is disabled for "
-                f"leveraged portfolios to preserve the intended leverage ratio."
+                f"Adjust manually — auto-normalisation is disabled for leveraged portfolios."
             )
         else:
-            # Plain long-only: safe to normalise
-            st.sidebar.warning(
-                f"{label}: weights sum to {net:.3f} — normalising to 1.0."
-            )
+            st.sidebar.warning(f"{label}: weights sum to {net:.3f} — normalising to 1.0.")
             weights_raw = {t: w / net for t, w in weights_raw.items()}
-            net = 1.0
 
     if is_leveraged:
-        long_exp  = sum(w for w in weights_raw.values() if w > 0)
-        borrowed  = abs(sum(w for w in weights_raw.values() if w < 0))
-        st.sidebar.info(
-            f"{label}: long **{long_exp:.1%}** | borrowed **{borrowed:.1%}**"
-        )
+        long_exp = sum(w for w in weights_raw.values() if w > 0)
+        borrowed = abs(sum(w for w in weights_raw.values() if w < 0))
+        st.sidebar.info(f"{label}: long **{long_exp:.1%}** | borrowed **{borrowed:.1%}**")
 
-    return weights_raw
+    if ddca_raw:
+        ddca_summary = ", ".join(f"{t} {v:.0%}" for t, v in ddca_raw.items())
+        st.sidebar.info(f"{label}: DDCA active — {ddca_summary}")
+
+    return weights_raw, ddca_raw
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +146,9 @@ portfolio_inputs = []
 for i, (label, defaults) in enumerate(zip(_LABELS, _DEFAULTS)):
     if i > 0:
         st.sidebar.divider()
-    weights = portfolio_input_block(label, defaults)
-    name    = st.sidebar.text_input(f"Name for {label}", value=label, key=f"name_{i}")
-    portfolio_inputs.append({"name": name, "weights": weights})
+    weights, ddca = portfolio_input_block(label, defaults)
+    name = st.sidebar.text_input(f"Name for {label}", value=label, key=f"name_{i}")
+    portfolio_inputs.append({"name": name, "weights": weights, "ddca_thresholds": ddca})
 
 # ---------------------------------------------------------------------------
 # Sidebar — investment settings
@@ -222,9 +232,11 @@ if run_btn:
     # ---- simulate ----
     results = []
     for cfg, color in zip(portfolio_cfgs, COLORS):
-        vals, invested = simulate_portfolio(
+        vals, invested, reserve = simulate_portfolio(
             prices, cfg["weights"], initial_inv, monthly_contrib,
             rebalance_annually=rebalance_annually,
+            ddca_thresholds=cfg.get("ddca_thresholds") or None,
+            risk_free_rate=risk_free_rate,
         )
         rets = returns_from_simulation(vals, invested)
         metrics = calculate_metrics(vals, invested, rets, risk_free_rate)
@@ -235,9 +247,11 @@ if run_btn:
         results.append({
             "name":     cfg["name"],
             "weights":  cfg["weights"],
+            "ddca":     cfg.get("ddca_thresholds") or {},
             "color":    color,
             "values":   vals,
             "invested": invested,
+            "reserve":  reserve,
             "returns":  rets,
             "metrics":  metrics,
             "annual":   ann,
@@ -270,7 +284,14 @@ if run_btn:
                 x=r["values"].index, y=r["values"],
                 name=r["name"], line=dict(color=r["color"], width=2),
             ))
-        # Total invested (same for both)
+            if r["reserve"].max() > 0:
+                fig_val.add_trace(go.Scatter(
+                    x=r["reserve"].index, y=r["reserve"],
+                    name=f"{r['name']} — DDCA reserve",
+                    line=dict(color=r["color"], width=1, dash="dot"),
+                    opacity=0.6,
+                ))
+        # Total invested (same for all)
         fig_val.add_trace(go.Scatter(
             x=results[0]["invested"].index, y=results[0]["invested"],
             name="Total Invested", line=dict(color="gray", width=1.5, dash="dash"),
