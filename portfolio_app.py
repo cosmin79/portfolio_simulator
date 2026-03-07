@@ -74,7 +74,7 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
                 "Weight",
                 min_value=-10.0,
                 max_value=10.0,
-                step=0.01,
+                step=0.001,
                 format="%.3f",
                 help="Negative = short/borrowed position",
             ),
