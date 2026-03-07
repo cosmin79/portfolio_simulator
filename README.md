@@ -24,7 +24,7 @@ There are two interfaces that share the same core engine (`portfolio_sim.py`).
 Edit the `CONFIGURATION` block at the top of the file, then run:
 
 ```bash
-python run_portfolio.py
+.venv/bin/python run_portfolio.py
 ```
 
 Four separate figure windows open (Overview, Risk, Assets, Metrics table),
@@ -63,7 +63,7 @@ as a starting point before editing the config.
 ### GUI — `portfolio_app.py`
 
 ```bash
-streamlit run portfolio_app.py
+.venv/bin/streamlit run portfolio_app.py
 ```
 
 Opens a web UI at `http://localhost:8501`.
