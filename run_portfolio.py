@@ -58,16 +58,16 @@ PORTFOLIOS = [
         "name": "Tech heavy",
         "weights": {
             "VT":  0.5,
-            "TSLA": 0.25,
-            "PLTR": 0.25,
+            "GOOG": 0.25,
+            "META": 0.25,
         },
         # Optional: per-ticker Double DCA thresholds.
         # Tickers listed here use DDCA; others use regular DCA.
         # Value = how far below 52-week high triggers the double-down (e.g. 0.10 = 10%).
         "ddca_thresholds": {
             "VT":  0.05,
-            "TSLA": 0.10,
-            "PLTR": 0.10,
+            "GOOG": 0.1,
+            "META": 0.2,
         },
     },
     {
