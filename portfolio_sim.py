@@ -1,0 +1,291 @@
+"""
+portfolio_sim.py - Core simulation engine
+
+Handles data fetching, portfolio simulation with DCA, and performance metrics.
+"""
+
+import warnings
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+warnings.filterwarnings("ignore")
+
+
+# ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+
+def fetch_prices(tickers: list[str], start_year: int, end_year: int | None = None) -> pd.DataFrame:
+    """
+    Download adjusted close prices for a list of tickers.
+
+    Returns a DataFrame indexed by date, one column per ticker.
+    Rows where ANY ticker has missing data are dropped, so the returned
+    DataFrame represents the period during which ALL tickers were trading.
+    """
+    start = f"{start_year}-01-01"
+    end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
+
+    raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw["Close"]
+    else:
+        # Single ticker returns flat columns
+        prices = raw[["Close"]].rename(columns={"Close": tickers[0]})
+
+    # Keep only the requested tickers (yfinance may return extras)
+    prices = prices[[t for t in tickers if t in prices.columns]]
+
+    missing = [t for t in tickers if t not in prices.columns]
+    if missing:
+        raise ValueError(f"Could not retrieve data for: {missing}")
+
+    prices = prices.dropna()
+
+    if prices.empty:
+        raise ValueError(
+            f"No overlapping trading days found for {tickers} from {start_year}."
+        )
+
+    return prices
+
+
+# ---------------------------------------------------------------------------
+# Simulation
+# ---------------------------------------------------------------------------
+
+def simulate_portfolio(
+    prices: pd.DataFrame,
+    weights: dict[str, float],
+    initial_investment: float,
+    monthly_contribution: float,
+    rebalance_annually: bool = False,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Simulate a portfolio with an initial lump-sum investment and fixed monthly DCA.
+
+    Each month's contribution is deployed on the first trading day of that month,
+    split proportionally according to `weights`.
+
+    If `rebalance_annually` is True, the portfolio is rebalanced back to target
+    weights on the first trading day of each new calendar year, before that
+    month's contribution is deployed.
+
+    Returns
+    -------
+    portfolio_values : pd.Series
+        Daily market value of the portfolio.
+    total_invested : pd.Series
+        Cumulative cash invested (lump-sum + contributions) at each date.
+    """
+    tickers = list(weights.keys())
+    w = np.array([weights[t] for t in tickers], dtype=float)
+    w /= w.sum()  # normalise just in case
+
+    prices_sub = prices[tickers]
+    prices_arr = prices_sub.values
+    dates = prices_sub.index
+
+    # Buy initial allocation at first-day open (approximated by first close)
+    shares = initial_investment * w / prices_arr[0]
+    total_invested_now = initial_investment
+    prev_month = dates[0].to_period("M")
+    prev_year  = dates[0].year
+
+    values: list[float] = []
+    invested: list[float] = []
+
+    for i in range(len(dates)):
+        if i > 0:
+            curr_month = dates[i].to_period("M")
+            curr_year  = dates[i].year
+            if curr_month != prev_month:
+                # Annual rebalance on first trading day of a new year
+                if rebalance_annually and curr_year != prev_year:
+                    port_val = float(np.dot(shares, prices_arr[i]))
+                    shares = port_val * w / prices_arr[i]
+
+                # Monthly contribution
+                new_shares = monthly_contribution * w / prices_arr[i]
+                shares = shares + new_shares
+                total_invested_now += monthly_contribution
+                prev_month = curr_month
+                prev_year  = curr_year
+
+        values.append(float(np.dot(shares, prices_arr[i])))
+        invested.append(total_invested_now)
+
+    return (
+        pd.Series(values, index=dates, name="Portfolio Value"),
+        pd.Series(invested, index=dates, name="Total Invested"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Returns helpers
+# ---------------------------------------------------------------------------
+
+def portfolio_daily_returns(prices: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
+    """
+    Constant-weight time-weighted daily returns.
+
+    Useful for correlation heatmaps and per-asset analysis, but does NOT
+    reflect weight drift (no-rebalance) or rebalancing events.  Use
+    `returns_from_simulation` for accurate per-simulation metrics.
+    """
+    tickers = list(weights.keys())
+    w = np.array([weights[t] for t in tickers], dtype=float)
+    w /= w.sum()
+
+    asset_rets = prices[tickers].pct_change().dropna()
+    return asset_rets.dot(w)
+
+
+def returns_from_simulation(
+    portfolio_values: pd.Series,
+    total_invested: pd.Series,
+) -> pd.Series:
+    """
+    Derive daily market returns from the simulation output, stripping out
+    the effect of cash injections.
+
+    On a contribution day the portfolio value includes new cash; without
+    adjusting for this, the "return" would be artificially inflated.
+    Stripped formula:
+        r_i = (value_i - contribution_i) / value_{i-1} - 1
+
+    This captures actual weight drift (no rebalance) and rebalancing events,
+    so metrics computed from this series correctly differ between the two modes.
+    """
+    contributions = total_invested.diff().fillna(0)
+    # value before new cash / previous end-of-day value
+    market_values = portfolio_values - contributions
+    returns = market_values.iloc[1:] / portfolio_values.iloc[:-1].values - 1
+    return returns
+
+
+def drawdown_series(returns: pd.Series) -> pd.Series:
+    """Drawdown at each date (negative values, e.g. -0.15 means -15%)."""
+    cum = (1 + returns).cumprod()
+    peak = cum.cummax()
+    return (cum - peak) / peak
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+def calculate_metrics(
+    portfolio_values: pd.Series,
+    total_invested: pd.Series,
+    returns: pd.Series,
+    risk_free_rate: float = 0.04,
+) -> dict:
+    """
+    Compute a comprehensive set of portfolio performance metrics.
+
+    Parameters
+    ----------
+    portfolio_values : daily market value of the portfolio
+    total_invested   : cumulative cash deployed
+    returns          : time-weighted daily returns (from portfolio_daily_returns)
+    risk_free_rate   : annual risk-free rate (decimal)
+    """
+    daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
+    n_years = (portfolio_values.index[-1] - portfolio_values.index[0]).days / 365.25
+
+    final_value = portfolio_values.iloc[-1]
+    total_inv = total_invested.iloc[-1]
+
+    # ---- Return metrics ----
+    cumulative_twr = float((1 + returns).prod() - 1)
+    cagr = float((1 + cumulative_twr) ** (1 / n_years) - 1) if n_years > 0 else float("nan")
+
+    total_pnl = final_value - total_inv
+    total_pnl_pct = total_pnl / total_inv
+
+    # ---- Risk metrics ----
+    annual_vol = float(returns.std() * np.sqrt(252))
+
+    excess = returns - daily_rf
+    sharpe = float(excess.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else float("nan")
+
+    down = returns[returns < daily_rf] - daily_rf
+    if len(down) > 0:
+        down_std_daily = float(np.sqrt((down ** 2).mean()))
+        sortino = float((returns.mean() - daily_rf) / down_std_daily * np.sqrt(252)) if down_std_daily > 0 else float("nan")
+    else:
+        sortino = float("nan")
+
+    dd = drawdown_series(returns)
+    max_dd = float(dd.min())
+
+    # Max drawdown duration (consecutive days in drawdown)
+    in_dd = dd < 0
+    groups = (in_dd != in_dd.shift()).cumsum()
+    dd_lengths = in_dd.groupby(groups).sum()
+    max_dd_days = int(dd_lengths.max()) if in_dd.any() else 0
+
+    calmar = cagr / abs(max_dd) if max_dd != 0 else float("nan")
+
+    # ---- Per-year breakdown ----
+    annual_rets = returns.resample("YE").apply(lambda x: float((1 + x).prod() - 1))
+    best_year = float(annual_rets.max())
+    worst_year = float(annual_rets.min())
+
+    # Win rate
+    win_rate = float((returns > 0).mean())
+
+    return {
+        "CAGR": cagr,
+        "Cumulative Return (TWR)": cumulative_twr,
+        "Total P&L ($)": total_pnl,
+        "Total P&L (%)": total_pnl_pct,
+        "Annual Volatility": annual_vol,
+        "Sharpe Ratio": sharpe,
+        "Sortino Ratio": sortino,
+        "Calmar Ratio": calmar,
+        "Max Drawdown": max_dd,
+        "Max DD Duration (days)": max_dd_days,
+        "Best Year": best_year,
+        "Worst Year": worst_year,
+        "Win Rate (daily)": win_rate,
+        "Final Value ($)": final_value,
+        "Total Invested ($)": total_inv,
+        "Years Simulated": n_years,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Correlation
+# ---------------------------------------------------------------------------
+
+def correlation_matrix(prices: pd.DataFrame, portfolio_configs: list[dict]) -> pd.DataFrame:
+    """
+    Return the correlation matrix of daily returns for all unique tickers
+    across the supplied portfolio configs.
+
+    Each portfolio config is a dict with at least a 'weights' key:
+        {'name': '...', 'weights': {'SPY': 0.6, 'BND': 0.4}}
+    """
+    all_tickers = []
+    for cfg in portfolio_configs:
+        for t in cfg["weights"]:
+            if t not in all_tickers:
+                all_tickers.append(t)
+
+    rets = prices[all_tickers].pct_change().dropna()
+    return rets.corr()
+
+
+# ---------------------------------------------------------------------------
+# Annual returns table
+# ---------------------------------------------------------------------------
+
+def annual_returns_table(returns: pd.Series) -> pd.Series:
+    """Yearly total returns from a daily return series."""
+    return returns.resample("YE").apply(lambda x: float((1 + x).prod() - 1))
