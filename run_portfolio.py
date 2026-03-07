@@ -27,7 +27,6 @@ from portfolio_sim import (
     correlation_matrix,
     drawdown_series,
     annual_returns_table,
-    suggest_ddca_thresholds,
 )
 
 # ===========================================================================
@@ -55,19 +54,13 @@ from portfolio_sim import (
 
 PORTFOLIOS = [
     {
-        "name": "Tech heavy",
+        "name": "All weather portfolio",
         "weights": {
-            "VT":  0.5,
-            "GOOG": 0.25,
-            "META": 0.25,
-        },
-        # Optional: per-ticker Double DCA thresholds.
-        # Tickers listed here use DDCA; others use regular DCA.
-        # Value = how far below 52-week high triggers the double-down (e.g. 0.10 = 10%).
-        "ddca_thresholds": {
-            "VT":  0.05,
-            "GOOG": 0.1,
-            "META": 0.2,
+            "VT":  0.603,
+            "BND": 0.402,
+            "BIL": -0.335,
+            "GCC":  0.165,
+            "GLD":  0.165,
         },
     },
     {
@@ -79,9 +72,9 @@ PORTFOLIOS = [
     },
 ]
 
-START_YEAR           = 2007     # simulation start (data availability may push this later)
+START_YEAR           = 2021     # simulation start (data availability may push this later)
 INITIAL_INVESTMENT   = 100_000  # USD lump-sum at start
-MONTHLY_CONTRIBUTION = 2000     # USD added every month
+MONTHLY_CONTRIBUTION = 0     # USD added every month
 RISK_FREE_RATE       = 0.04    # annual, e.g. 0.04 = 4 %
 REBALANCE_ANNUALLY   = False    # rebalance to target weights each January
 
@@ -141,22 +134,6 @@ def run() -> None:
     actual_start = prices.index[0].date()
     actual_end   = prices.index[-1].date()
     print(f"Data range: {actual_start} → {actual_end}  ({len(prices)} trading days)")
-
-    # ------------------------------------------------- DDCA threshold hints
-    long_tickers = [t for p in PORTFOLIOS for t, w in p["weights"].items() if w > 0]
-    suggestions = suggest_ddca_thresholds(prices, tickers=list(dict.fromkeys(long_tickers)))
-    col_w = max(len(t) for t in suggestions) + 2
-    print(f"\nSuggested DDCA thresholds (target ~25 % trigger rate):")
-    print(f"  {'Ticker':<{col_w}} {'Suggested':>10} {'Median off 52wH':>16} {'Actual rate':>12} {'Months':>7}")
-    print(f"  {'-'*col_w} {'-'*10} {'-'*16} {'-'*12} {'-'*7}")
-    for ticker, s in suggestions.items():
-        print(
-            f"  {ticker:<{col_w}} {s['threshold']:>9.1%} "
-            f"{s['median_pct_off']:>15.1%} "
-            f"{s['trigger_rate']:>11.1%} "
-            f"{s['months_sampled']:>7}"
-        )
-    print()
 
     # ------------------------------------------------------------ simulation
     results = []
