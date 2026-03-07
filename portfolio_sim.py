@@ -184,6 +184,79 @@ def simulate_portfolio(
 
 
 # ---------------------------------------------------------------------------
+# DDCA threshold suggestion
+# ---------------------------------------------------------------------------
+
+def suggest_ddca_thresholds(
+    prices: pd.DataFrame,
+    tickers: list[str] | None = None,
+    target_trigger_rate: float = 0.25,
+) -> dict[str, dict]:
+    """
+    For each ticker, suggest a DDCA threshold and report key stats.
+
+    The threshold is the value T such that the double-down would have fired
+    in approximately `target_trigger_rate` fraction of months historically
+    (e.g. 0.25 → fires ~3 months/year on average, giving the reserve time
+    to accumulate between events).
+
+    Computed as the (1 - target_trigger_rate) quantile of the monthly
+    "% below 52-week high" distribution.
+
+    Returns a dict:
+        {
+            ticker: {
+                "threshold":       float,   # suggested threshold (e.g. 0.18)
+                "median_pct_off":  float,   # median monthly distance from 52wk high
+                "trigger_rate":    float,   # actual trigger rate at suggested threshold
+                "months_sampled":  int,
+            }
+        }
+    """
+    if tickers is None:
+        tickers = list(prices.columns)
+
+    result = {}
+    for ticker in tickers:
+        if ticker not in prices.columns:
+            continue
+
+        px    = prices[ticker].values
+        dates = prices.index
+
+        monthly_pct_off: list[float] = []
+        prev_month = dates[0].to_period("M")
+
+        for i in range(1, len(dates)):
+            curr_month = dates[i].to_period("M")
+            if curr_month != prev_month:
+                lookback_start = max(0, i - 251)
+                high_52w = px[lookback_start : i + 1].max()
+                pct_off  = (high_52w - px[i]) / high_52w
+                monthly_pct_off.append(float(pct_off))
+                prev_month = curr_month
+
+        if not monthly_pct_off:
+            continue
+
+        arr = np.array(monthly_pct_off)
+        # Threshold = (1 - rate) quantile so that `rate` fraction of months exceed it
+        raw = float(np.quantile(arr, 1.0 - target_trigger_rate))
+        # Round to nearest 0.5 % and clip to [1 %, 50 %]
+        threshold = float(np.clip(round(raw * 200) / 200, 0.01, 0.50))
+        actual_rate = float((arr > threshold).mean())
+
+        result[ticker] = {
+            "threshold":      threshold,
+            "median_pct_off": float(np.median(arr)),
+            "trigger_rate":   actual_rate,
+            "months_sampled": len(arr),
+        }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Returns helpers
 # ---------------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ from portfolio_sim import (
     correlation_matrix,
     drawdown_series,
     annual_returns_table,
+    suggest_ddca_thresholds,
 )
 
 # ---------------------------------------------------------------------------
@@ -172,7 +173,9 @@ rebalance_annually = st.sidebar.checkbox(
     help="On the first trading day of each new year, sell/buy assets to restore target weights.",
 )
 
-run_btn = st.sidebar.button("Run Simulation", type="primary", use_container_width=True)
+run_btn      = st.sidebar.button("Run Simulation", type="primary", use_container_width=True)
+suggest_btn  = st.sidebar.button("Suggest DDCA Thresholds", use_container_width=True,
+                                  help="Fetch price history and recommend per-ticker thresholds based on historical drawdown distribution.")
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -202,6 +205,52 @@ def fmt(key, v):
     if key == "Years Simulated":
         return f"{v:.1f} yrs"
     return str(v)
+
+
+# ---------------------------------------------------------------------------
+# DDCA threshold suggestion
+# ---------------------------------------------------------------------------
+
+if suggest_btn:
+    all_cfgs    = [p for p in portfolio_inputs if p["weights"]]
+    long_tickers = list(dict.fromkeys(
+        t for p in all_cfgs for t, w in p["weights"].items() if w > 0
+    ))
+    if not long_tickers:
+        st.warning("Add at least one ticker first.")
+    else:
+        with st.spinner("Fetching price history for threshold analysis…"):
+            try:
+                px = fetch_prices(long_tickers, start_year)
+            except ValueError as e:
+                st.error(str(e))
+                px = None
+        if px is not None:
+            suggestions = suggest_ddca_thresholds(px, tickers=long_tickers)
+            st.subheader("Suggested DDCA Thresholds")
+            st.caption(
+                "Threshold = % below 52-week high that triggers the double-down. "
+                "Calibrated so the trigger fires ~25 % of months (≈3×/year), "
+                "giving the reserve time to build between events. "
+                "Increase the threshold for volatile stocks to avoid firing every month."
+            )
+            rows = []
+            for t, s in suggestions.items():
+                rows.append({
+                    "Ticker":           t,
+                    "Suggested threshold": f"{s['threshold']:.1%}",
+                    "Median off 52w high": f"{s['median_pct_off']:.1%}",
+                    "Actual trigger rate": f"{s['trigger_rate']:.1%}",
+                    "Months sampled":      s["months_sampled"],
+                })
+            st.dataframe(pd.DataFrame(rows).set_index("Ticker"), use_container_width=True)
+            st.info(
+                "💡 If the suggested threshold is very high (>25 %), the stock is frequently "
+                "far below its 52-week high and DDCA will fire almost every month — "
+                "consider whether DDCA is appropriate for it, or use a threshold closer to "
+                "its median drawdown so you get occasional large deployments instead of "
+                "constant small ones."
+            )
 
 
 # ---------------------------------------------------------------------------
