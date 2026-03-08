@@ -158,8 +158,18 @@ for i, (label, defaults) in enumerate(zip(_LABELS, _DEFAULTS)):
 st.sidebar.divider()
 st.sidebar.header("Investment Settings")
 
-start_year = st.sidebar.slider("Start Year", 1970, 2024, 2015)
+from datetime import datetime as _dt
+_now = _dt.today()
+
+start_year = st.sidebar.slider("Start Year", 1970, _now.year, 2015)
 start_month = st.sidebar.slider("Start Month", 1, 12, 1)
+use_custom_end = st.sidebar.checkbox("Custom end date", value=False)
+if use_custom_end:
+    end_year  = st.sidebar.slider("End Year",  1970, _now.year, _now.year)
+    end_month = st.sidebar.slider("End Month", 1, 12, _now.month)
+else:
+    end_year  = None
+    end_month = 12
 initial_inv = st.sidebar.number_input(
     "Initial Investment ($)", min_value=0, max_value=10_000_000, value=10_000, step=1_000
 )
@@ -223,7 +233,7 @@ if suggest_btn:
                 import warnings as _warnings
                 with _warnings.catch_warnings(record=True) as _caught:
                     _warnings.simplefilter("always")
-                    px = fetch_prices(long_tickers, start_year, start_month)
+                    px = fetch_prices(long_tickers, start_year, start_month, end_year, end_month)
                 for w in _caught:
                     st.warning(str(w.message))
             except ValueError as e:
@@ -273,7 +283,7 @@ if run_btn:
             import warnings as _warnings
             with _warnings.catch_warnings(record=True) as _caught:
                 _warnings.simplefilter("always")
-                prices = fetch_prices(all_tickers, start_year, start_month)
+                prices = fetch_prices(all_tickers, start_year, start_month, end_year, end_month)
             for w in _caught:
                 st.warning(str(w.message))
         except ValueError as e:
@@ -284,7 +294,7 @@ if run_btn:
     actual_end   = prices.index[-1].date()
 
     try:
-        rf_series = fetch_risk_free_rate(start_year, start_month)
+        rf_series = fetch_risk_free_rate(start_year, start_month, end_year, end_month)
     except ValueError as e:
         st.error(str(e))
         st.stop()

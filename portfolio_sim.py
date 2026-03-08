@@ -20,7 +20,7 @@ RateInput = float | pd.Series  # type alias used throughout
 # Data fetching
 # ---------------------------------------------------------------------------
 
-def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_year: int | None = None) -> pd.DataFrame:
+def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_year: int | None = None, end_month: int = 12) -> pd.DataFrame:
     """
     Download adjusted close prices for a list of tickers.
 
@@ -29,7 +29,13 @@ def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_
     DataFrame represents the period during which ALL tickers were trading.
     """
     start = f"{start_year}-{start_month:02d}-01"
-    end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
+    if end_year:
+        # Last day of the specified end month
+        import calendar
+        last_day = calendar.monthrange(end_year, end_month)[1]
+        end = f"{end_year}-{end_month:02d}-{last_day}"
+    else:
+        end = datetime.today().strftime("%Y-%m-%d")
 
     raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)
 
@@ -77,6 +83,7 @@ def fetch_risk_free_rate(
     start_year: int,
     start_month: int = 1,
     end_year: int | None = None,
+    end_month: int = 12,
 ) -> pd.Series:
     """
     Download the 13-week T-bill annualised yield (^IRX) as a decimal Series
@@ -85,8 +92,13 @@ def fetch_risk_free_rate(
     Returns a Series of *annualised* rates (e.g. 0.05 = 5%).
     Raises ValueError if the data cannot be fetched.
     """
+    import calendar
     start = f"{start_year}-{start_month:02d}-01"
-    end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
+    if end_year:
+        last_day = calendar.monthrange(end_year, end_month)[1]
+        end = f"{end_year}-{end_month:02d}-{last_day}"
+    else:
+        end = datetime.today().strftime("%Y-%m-%d")
     raw = yf.download("^IRX", start=start, end=end, auto_adjust=False, progress=False)
     if raw.empty:
         raise ValueError(f"Could not fetch ^IRX (3-month T-bill) data from {start} to {end}.")
