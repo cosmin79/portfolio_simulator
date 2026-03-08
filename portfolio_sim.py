@@ -44,6 +44,23 @@ def fetch_prices(tickers: list[str], start_year: int, end_year: int | None = Non
     if missing:
         raise ValueError(f"Could not retrieve data for: {missing}")
 
+    # Warn about any ticker that limits the shared date window
+    first_valid = {t: prices[t].first_valid_index() for t in tickers}
+    last_valid  = {t: prices[t].last_valid_index()  for t in tickers}
+    for t in tickers:
+        if first_valid[t] is not None and first_valid[t] > prices.index[0]:
+            warnings.warn(
+                f"{t} only has data from {first_valid[t].date()} — "
+                f"this ticker is limiting the simulation start date.",
+                stacklevel=2,
+            )
+        if last_valid[t] is not None and last_valid[t] < prices.index[-1]:
+            warnings.warn(
+                f"{t} data ends at {last_valid[t].date()} — "
+                f"this ticker is limiting the simulation end date.",
+                stacklevel=2,
+            )
+
     prices = prices.dropna()
 
     if prices.empty:

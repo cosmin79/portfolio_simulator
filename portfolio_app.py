@@ -221,7 +221,12 @@ if suggest_btn:
     else:
         with st.spinner("Fetching price history for threshold analysis…"):
             try:
-                px = fetch_prices(long_tickers, start_year)
+                import warnings as _warnings
+                with _warnings.catch_warnings(record=True) as _caught:
+                    _warnings.simplefilter("always")
+                    px = fetch_prices(long_tickers, start_year)
+                for w in _caught:
+                    st.warning(str(w.message))
             except ValueError as e:
                 st.error(str(e))
                 px = None
@@ -266,7 +271,12 @@ if run_btn:
 
     with st.spinner(f"Downloading data for {all_tickers} …"):
         try:
-            prices = fetch_prices(all_tickers, start_year)
+            import warnings as _warnings
+            with _warnings.catch_warnings(record=True) as _caught:
+                _warnings.simplefilter("always")
+                prices = fetch_prices(all_tickers, start_year)
+            for w in _caught:
+                st.warning(str(w.message))
         except ValueError as e:
             st.error(str(e))
             st.stop()

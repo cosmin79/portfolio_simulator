@@ -130,7 +130,12 @@ def run() -> None:
         dict.fromkeys(t for p in PORTFOLIOS for t in p["weights"])
     )
     print(f"Fetching data for: {all_tickers}  (from {START_YEAR})")
-    prices = fetch_prices(all_tickers, START_YEAR)
+    import warnings as _warnings
+    with _warnings.catch_warnings(record=True) as _caught:
+        _warnings.simplefilter("always")
+        prices = fetch_prices(all_tickers, START_YEAR)
+    for w in _caught:
+        print(f"WARNING: {w.message}")
     actual_start = prices.index[0].date()
     actual_end   = prices.index[-1].date()
     print(f"Data range: {actual_start} → {actual_end}  ({len(prices)} trading days)")
