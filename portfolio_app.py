@@ -166,10 +166,6 @@ initial_inv = st.sidebar.number_input(
 monthly_contrib = st.sidebar.number_input(
     "Monthly Contribution ($)", min_value=0, max_value=100_000, value=500, step=100
 )
-rf_fallback = st.sidebar.number_input(
-    "Risk-Free Rate fallback (annual %)", min_value=0.0, max_value=20.0, value=4.0, step=0.25,
-    help="Used only if ^IRX (3-month T-bill) data cannot be fetched for the selected period."
-) / 100.0
 rebalance_annually = st.sidebar.checkbox(
     "Rebalance annually (each January)",
     value=False,
@@ -287,7 +283,11 @@ if run_btn:
     actual_start = prices.index[0].date()
     actual_end   = prices.index[-1].date()
 
-    rf_series = fetch_risk_free_rate(start_year, start_month, fallback=rf_fallback)
+    try:
+        rf_series = fetch_risk_free_rate(start_year, start_month)
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
     rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
     st.info(
         f"Data: **{actual_start}** → **{actual_end}** "

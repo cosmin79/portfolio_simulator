@@ -77,28 +77,22 @@ def fetch_risk_free_rate(
     start_year: int,
     start_month: int = 1,
     end_year: int | None = None,
-    fallback: float = 0.04,
 ) -> pd.Series:
     """
     Download the 13-week T-bill annualised yield (^IRX) as a decimal Series
     indexed by trading date.
 
-    Returns a Series of *annualised* rates (e.g. 0.05 = 5%).  Falls back to
-    a flat `fallback` rate if the download fails or returns no data.
+    Returns a Series of *annualised* rates (e.g. 0.05 = 5%).
+    Raises ValueError if the data cannot be fetched.
     """
     start = f"{start_year}-{start_month:02d}-01"
     end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
-    try:
-        raw = yf.download("^IRX", start=start, end=end, auto_adjust=False, progress=False)
-        if not raw.empty:
-            series = raw["Close"].squeeze() / 100.0
-            series.name = "risk_free_rate"
-            return series
-    except Exception:
-        pass
-    # Fallback: flat rate for every calendar day in range
-    idx = pd.date_range(start=start, end=end, freq="B")
-    return pd.Series(fallback, index=idx, name="risk_free_rate")
+    raw = yf.download("^IRX", start=start, end=end, auto_adjust=False, progress=False)
+    if raw.empty:
+        raise ValueError(f"Could not fetch ^IRX (3-month T-bill) data from {start} to {end}.")
+    series = raw["Close"].squeeze() / 100.0
+    series.name = "risk_free_rate"
+    return series
 
 
 # ---------------------------------------------------------------------------

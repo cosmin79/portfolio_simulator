@@ -76,7 +76,6 @@ PORTFOLIOS = [
 START_YEAR           = 2021     # simulation start (data availability may push this later)
 INITIAL_INVESTMENT   = 100_000  # USD lump-sum at start
 MONTHLY_CONTRIBUTION = 0     # USD added every month
-RISK_FREE_RATE       = 0.04    # annual, e.g. 0.04 = 4 %
 REBALANCE_ANNUALLY   = False    # rebalance to target weights each January
 
 # ===========================================================================
@@ -141,7 +140,7 @@ def run() -> None:
     actual_end   = prices.index[-1].date()
     print(f"Data range: {actual_start} → {actual_end}  ({len(prices)} trading days)")
 
-    rf_series = fetch_risk_free_rate(START_YEAR, fallback=RISK_FREE_RATE)
+    rf_series = fetch_risk_free_rate(START_YEAR)
     rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
     print(f"Risk-free rate: {rf_mean:.2%} avg (^IRX 3-month T-bill)")
 
