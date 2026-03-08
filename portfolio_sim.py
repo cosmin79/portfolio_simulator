@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 # Data fetching
 # ---------------------------------------------------------------------------
 
-def fetch_prices(tickers: list[str], start_year: int, end_year: int | None = None) -> pd.DataFrame:
+def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_year: int | None = None) -> pd.DataFrame:
     """
     Download adjusted close prices for a list of tickers.
 
@@ -26,7 +26,7 @@ def fetch_prices(tickers: list[str], start_year: int, end_year: int | None = Non
     Rows where ANY ticker has missing data are dropped, so the returned
     DataFrame represents the period during which ALL tickers were trading.
     """
-    start = f"{start_year}-01-01"
+    start = f"{start_year}-{start_month:02d}-01"
     end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
 
     raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)

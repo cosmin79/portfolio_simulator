@@ -158,6 +158,7 @@ st.sidebar.divider()
 st.sidebar.header("Investment Settings")
 
 start_year = st.sidebar.slider("Start Year", 1970, 2024, 2015)
+start_month = st.sidebar.slider("Start Month", 1, 12, 1)
 initial_inv = st.sidebar.number_input(
     "Initial Investment ($)", min_value=0, max_value=10_000_000, value=10_000, step=1_000
 )
@@ -224,7 +225,7 @@ if suggest_btn:
                 import warnings as _warnings
                 with _warnings.catch_warnings(record=True) as _caught:
                     _warnings.simplefilter("always")
-                    px = fetch_prices(long_tickers, start_year)
+                    px = fetch_prices(long_tickers, start_year, start_month)
                 for w in _caught:
                     st.warning(str(w.message))
             except ValueError as e:
@@ -274,7 +275,7 @@ if run_btn:
             import warnings as _warnings
             with _warnings.catch_warnings(record=True) as _caught:
                 _warnings.simplefilter("always")
-                prices = fetch_prices(all_tickers, start_year)
+                prices = fetch_prices(all_tickers, start_year, start_month)
             for w in _caught:
                 st.warning(str(w.message))
         except ValueError as e:
