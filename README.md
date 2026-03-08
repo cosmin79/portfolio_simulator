@@ -37,28 +37,26 @@ PORTFOLIOS = [
     {
         "name": "My Portfolio",
         "weights": {
-            "VT":   0.60,
-            "BND":  0.30,
+            "SPY":  0.60,
+            "AGG":  0.30,
             "GLD":  0.10,
         },
         # Optional — omit for plain DCA on all tickers
         "ddca_thresholds": {
-            "VT":  0.05,   # trigger double-down when >5% below 52w high
+            "SPY": 0.05,   # trigger double-down when >5% below 52w high
             "GLD": 0.10,
         },
     },
     # Add up to 3 portfolios
 ]
 
-START_YEAR           = 2015    # data availability may push this later
+START_YEAR           = 2015  # data availability may push this later
 INITIAL_INVESTMENT   = 10_000  # USD lump-sum on day one
 MONTHLY_CONTRIBUTION = 500     # USD added every month
-RISK_FREE_RATE       = 0.04   # annual, used for Sharpe/Sortino and reserve growth
 REBALANCE_ANNUALLY   = False   # rebalance to target weights each January
 ```
 
-**Suggested DDCA thresholds** are printed automatically at startup — use these
-as a starting point before editing the config.
+The risk-free rate is fetched automatically from `^IRX` (3-month T-bill) for the simulation period and printed at startup.
 
 ### GUI — `portfolio_app.py`
 
@@ -69,6 +67,8 @@ as a starting point before editing the config.
 Opens a web UI at `http://localhost:8501`.
 
 - **Sidebar** — configure up to 3 portfolios via editable tables (ticker, weight, DDCA %)
+- **Load preset** dropdown — quickly load built-in portfolios (All Weather CTA, All Weather Commodity, 60/40)
+- **Start/end date** — year and month sliders; end date defaults to today
 - **Suggest DDCA Thresholds** button — fetches price history and recommends per-ticker thresholds
 - **Run Simulation** button — runs the full simulation and displays all charts
 
