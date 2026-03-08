@@ -49,20 +49,20 @@ COLORS = ["#2196F3", "#FF5722", "#4CAF50"]   # blue, deep-orange, green
 
 PRESETS: dict[str, list[tuple[str, float]]] = {
     "All Weather CTA": [
-        ("VOO",   0.603),
+        ("SPY",   0.603),
         ("AGG",   0.402),
         ("LQD",  -0.335),
         ("AMFAX", 0.330),
     ],
     "All Weather Commodity": [
-        ("VOO",  0.603),
+        ("SPY",  0.603),
         ("AGG",  0.402),
         ("LQD", -0.335),
         ("GLD",  0.165),
         ("GCC",  0.165),
     ],
     "60 / 40": [
-        ("VOO", 0.6),
+        ("SPY", 0.6),
         ("AGG", 0.4),
     ],
 }

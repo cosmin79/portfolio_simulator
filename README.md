@@ -74,6 +74,13 @@ Opens a web UI at `http://localhost:8501`.
 
 ---
 
+## Data notes
+
+- All prices are fetched with `auto_adjust=True`, which uses the dividend- and split-adjusted close price. This means **dividends are automatically reinvested** — all return and CAGR figures reflect total return, not price return.
+- The risk-free rate is fetched live from Yahoo Finance (`^IRX`, 13-week T-bill yield) for the exact simulation period, so Sharpe and Sortino ratios correctly reflect the rate environment of the time rather than a fixed assumption.
+
+---
+
 ## Features
 
 ### Portfolios
