@@ -47,6 +47,26 @@ st.caption("Compare two portfolios with DCA · Sharpe · Sortino · Drawdown · 
 
 COLORS = ["#2196F3", "#FF5722", "#4CAF50"]   # blue, deep-orange, green
 
+PRESETS: dict[str, list[tuple[str, float]]] = {
+    "All Weather CTA": [
+        ("VOO",   0.603),
+        ("AGG",   0.402),
+        ("LQD",  -0.335),
+        ("AMFAX", 0.330),
+    ],
+    "All Weather Commodity": [
+        ("VOO",  0.603),
+        ("AGG",  0.402),
+        ("LQD", -0.335),
+        ("GLD",  0.165),
+        ("GCC",  0.165),
+    ],
+    "60 / 40": [
+        ("VOO", 0.6),
+        ("AGG", 0.4),
+    ],
+}
+
 
 def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) -> dict:
     """
@@ -60,15 +80,21 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
     """
     st.sidebar.subheader(label)
 
+    preset_options = ["Custom"] + list(PRESETS.keys())
+    selected_preset = st.sidebar.selectbox(
+        "Load preset", preset_options, index=0, key=f"preset_{label}"
+    )
+    active_tickers = PRESETS[selected_preset] if selected_preset != "Custom" else default_tickers
+
     default_df = pd.DataFrame(
-        [(t, w, None) for t, w in default_tickers],
+        [(t, w, None) for t, w in active_tickers],
         columns=["Ticker", "Weight", "DDCA %"],
     )
     edited = st.sidebar.data_editor(
         default_df,
         num_rows="dynamic",
         use_container_width=True,
-        key=f"editor_{label}",
+        key=f"editor_{label}_{selected_preset}",
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker", width="small"),
             "Weight": st.column_config.NumberColumn(
