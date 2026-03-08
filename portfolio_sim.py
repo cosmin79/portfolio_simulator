@@ -295,8 +295,13 @@ def returns_from_simulation(
     contributions = total_invested.diff().fillna(0)
     # value before new cash / previous end-of-day value
     market_values = portfolio_values - contributions
-    returns = market_values.iloc[1:] / portfolio_values.iloc[:-1].values - 1
-    return returns
+    prev_values   = portfolio_values.iloc[:-1].values
+    # Guard against division by zero when the portfolio hasn't been funded yet
+    # (initial_investment=0 means portfolio_value=0 until the first contribution)
+    raw = np.where(prev_values > 0, market_values.iloc[1:].values / prev_values - 1, np.nan)
+    returns = pd.Series(raw, index=portfolio_values.index[1:])
+    # Drop any stray inf/nan so they don't poison cumulative products
+    return returns.replace([np.inf, -np.inf], np.nan)
 
 
 def drawdown_series(returns: pd.Series) -> pd.Series:
