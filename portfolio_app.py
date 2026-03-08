@@ -17,6 +17,7 @@ from plotly.subplots import make_subplots
 
 from portfolio_sim import (
     fetch_prices,
+    fetch_risk_free_rate,
     simulate_portfolio,
     portfolio_daily_returns,
     returns_from_simulation,
@@ -165,8 +166,9 @@ initial_inv = st.sidebar.number_input(
 monthly_contrib = st.sidebar.number_input(
     "Monthly Contribution ($)", min_value=0, max_value=100_000, value=500, step=100
 )
-risk_free_rate = st.sidebar.number_input(
-    "Risk-Free Rate (annual %)", min_value=0.0, max_value=20.0, value=4.0, step=0.25
+rf_fallback = st.sidebar.number_input(
+    "Risk-Free Rate fallback (annual %)", min_value=0.0, max_value=20.0, value=4.0, step=0.25,
+    help="Used only if ^IRX (3-month T-bill) data cannot be fetched for the selected period."
 ) / 100.0
 rebalance_annually = st.sidebar.checkbox(
     "Rebalance annually (each January)",
@@ -284,9 +286,13 @@ if run_btn:
 
     actual_start = prices.index[0].date()
     actual_end   = prices.index[-1].date()
+
+    rf_series = fetch_risk_free_rate(start_year, start_month, fallback=rf_fallback)
+    rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
     st.info(
         f"Data: **{actual_start}** → **{actual_end}** "
-        f"({len(prices):,} trading days, {len(all_tickers)} tickers)"
+        f"({len(prices):,} trading days, {len(all_tickers)} tickers) · "
+        f"Avg risk-free rate: **{rf_mean:.2%}** (^IRX)"
     )
 
     # ---- simulate ----
@@ -296,10 +302,10 @@ if run_btn:
             prices, cfg["weights"], initial_inv, monthly_contrib,
             rebalance_annually=rebalance_annually,
             ddca_thresholds=cfg.get("ddca_thresholds") or None,
-            risk_free_rate=risk_free_rate,
+            risk_free_rate=rf_series,
         )
         rets = returns_from_simulation(vals, invested)
-        metrics = calculate_metrics(vals, invested, rets, risk_free_rate)
+        metrics = calculate_metrics(vals, invested, rets, rf_series)
         metrics["Long Exposure"] = sum(w for w in cfg["weights"].values() if w > 0)
         metrics["Borrowed"]      = abs(sum(w for w in cfg["weights"].values() if w < 0))
         ann = annual_returns_table(rets)
@@ -445,12 +451,11 @@ if run_btn:
         # Rolling 12-month Sharpe
         st.subheader("Rolling 12-Month Sharpe Ratio")
         fig_sharpe = go.Figure()
-        daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
+        daily_rf_s = (1 + rf_series.reindex(results[0]["returns"].index, method="ffill").bfill()) ** (1 / 252) - 1
         for r in results:
+            excess = r["returns"] - daily_rf_s
             rolling_sharpe = (
-                (r["returns"] - daily_rf)
-                .rolling(252)
-                .mean()
+                excess.rolling(252).mean()
                 .div(r["returns"].rolling(252).std())
                 * np.sqrt(252)
             )

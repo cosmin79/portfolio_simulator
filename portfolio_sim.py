@@ -13,6 +13,8 @@ import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
+RateInput = float | pd.Series  # type alias used throughout
+
 
 # ---------------------------------------------------------------------------
 # Data fetching
@@ -71,6 +73,34 @@ def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_
     return prices
 
 
+def fetch_risk_free_rate(
+    start_year: int,
+    start_month: int = 1,
+    end_year: int | None = None,
+    fallback: float = 0.04,
+) -> pd.Series:
+    """
+    Download the 13-week T-bill annualised yield (^IRX) as a decimal Series
+    indexed by trading date.
+
+    Returns a Series of *annualised* rates (e.g. 0.05 = 5%).  Falls back to
+    a flat `fallback` rate if the download fails or returns no data.
+    """
+    start = f"{start_year}-{start_month:02d}-01"
+    end = f"{end_year}-12-31" if end_year else datetime.today().strftime("%Y-%m-%d")
+    try:
+        raw = yf.download("^IRX", start=start, end=end, auto_adjust=False, progress=False)
+        if not raw.empty:
+            series = raw["Close"].squeeze() / 100.0
+            series.name = "risk_free_rate"
+            return series
+    except Exception:
+        pass
+    # Fallback: flat rate for every calendar day in range
+    idx = pd.date_range(start=start, end=end, freq="B")
+    return pd.Series(fallback, index=idx, name="risk_free_rate")
+
+
 # ---------------------------------------------------------------------------
 # Simulation
 # ---------------------------------------------------------------------------
@@ -82,7 +112,7 @@ def simulate_portfolio(
     monthly_contribution: float,
     rebalance_annually: bool = False,
     ddca_thresholds: dict[str, float] | None = None,
-    risk_free_rate: float = 0.04,
+    risk_free_rate: RateInput = 0.04,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
     Simulate a portfolio with an initial lump-sum investment and fixed monthly DCA.
@@ -122,7 +152,12 @@ def simulate_portfolio(
     prices_arr = prices_sub.values
     dates = prices_sub.index
 
-    daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
+    # Pre-compute a per-day risk-free rate array aligned to the price dates
+    if isinstance(risk_free_rate, pd.Series):
+        rf_aligned = risk_free_rate.reindex(dates, method="ffill").bfill()
+        daily_rf_arr = (1 + rf_aligned.values) ** (1 / 252) - 1
+    else:
+        daily_rf_arr = np.full(len(dates), (1 + risk_free_rate) ** (1 / 252) - 1)
 
     # Per-ticker cash reserves (only for DDCA tickers with positive weight)
     ddca = ddca_thresholds or {}
@@ -143,7 +178,7 @@ def simulate_portfolio(
     for i in range(len(dates)):
         # Grow reserves by risk-free rate each day
         for t in reserves:
-            reserves[t] *= (1 + daily_rf)
+            reserves[t] *= (1 + daily_rf_arr[i])
 
         if i > 0:
             curr_month = dates[i].to_period("M")
@@ -336,7 +371,7 @@ def calculate_metrics(
     portfolio_values: pd.Series,
     total_invested: pd.Series,
     returns: pd.Series,
-    risk_free_rate: float = 0.04,
+    risk_free_rate: RateInput = 0.04,
 ) -> dict:
     """
     Compute a comprehensive set of portfolio performance metrics.
@@ -346,9 +381,16 @@ def calculate_metrics(
     portfolio_values : daily market value of the portfolio
     total_invested   : cumulative cash deployed
     returns          : time-weighted daily returns (from portfolio_daily_returns)
-    risk_free_rate   : annual risk-free rate (decimal)
+    risk_free_rate   : annual risk-free rate — either a scalar float or a
+                       pd.Series of annualised rates indexed by date (e.g.
+                       from fetch_risk_free_rate).  When a Series is passed
+                       it is aligned and interpolated to match the returns index.
     """
-    daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
+    if isinstance(risk_free_rate, pd.Series):
+        rf_aligned = risk_free_rate.reindex(returns.index, method="ffill").bfill()
+        daily_rf = (1 + rf_aligned) ** (1 / 252) - 1
+    else:
+        daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
     n_years = (portfolio_values.index[-1] - portfolio_values.index[0]).days / 365.25
 
     final_value = portfolio_values.iloc[-1]
@@ -367,10 +409,12 @@ def calculate_metrics(
     excess = returns - daily_rf
     sharpe = float(excess.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else float("nan")
 
-    down = returns[returns < daily_rf] - daily_rf
+    below_rf = returns < daily_rf
+    down = (returns - daily_rf)[below_rf]
     if len(down) > 0:
         down_std_daily = float(np.sqrt((down ** 2).mean()))
-        sortino = float((returns.mean() - daily_rf) / down_std_daily * np.sqrt(252)) if down_std_daily > 0 else float("nan")
+        mean_excess = float(excess.mean())
+        sortino = float(mean_excess / down_std_daily * np.sqrt(252)) if down_std_daily > 0 else float("nan")
     else:
         sortino = float("nan")
 

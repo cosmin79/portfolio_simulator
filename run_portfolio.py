@@ -20,6 +20,7 @@ import numpy as np
 
 from portfolio_sim import (
     fetch_prices,
+    fetch_risk_free_rate,
     simulate_portfolio,
     portfolio_daily_returns,
     returns_from_simulation,
@@ -140,6 +141,10 @@ def run() -> None:
     actual_end   = prices.index[-1].date()
     print(f"Data range: {actual_start} → {actual_end}  ({len(prices)} trading days)")
 
+    rf_series = fetch_risk_free_rate(START_YEAR, fallback=RISK_FREE_RATE)
+    rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
+    print(f"Risk-free rate: {rf_mean:.2%} avg (^IRX 3-month T-bill)")
+
     # ------------------------------------------------------------ simulation
     results = []
     for p in PORTFOLIOS:
@@ -147,10 +152,10 @@ def run() -> None:
             prices, p["weights"], INITIAL_INVESTMENT, MONTHLY_CONTRIBUTION,
             rebalance_annually=REBALANCE_ANNUALLY,
             ddca_thresholds=p.get("ddca_thresholds"),
-            risk_free_rate=RISK_FREE_RATE,
+            risk_free_rate=rf_series,
         )
         rets = returns_from_simulation(vals, invested)
-        metrics = calculate_metrics(vals, invested, rets, RISK_FREE_RATE)
+        metrics = calculate_metrics(vals, invested, rets, rf_series)
         metrics["Long Exposure"] = sum(w for w in p["weights"].values() if w > 0)
         metrics["Borrowed"]      = abs(sum(w for w in p["weights"].values() if w < 0))
         annual_rets = annual_returns_table(rets)
@@ -253,11 +258,12 @@ def run() -> None:
     ax_dist.legend()
 
     # Rolling 12-month Sharpe
-    daily_rf = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
+    ref_returns = results[0]["returns"]
+    daily_rf_s = (1 + rf_series.reindex(ref_returns.index, method="ffill").bfill()) ** (1 / 252) - 1
     for r, color in zip(results, COLORS):
+        excess = r["returns"] - daily_rf_s
         rs = (
-            (r["returns"] - daily_rf)
-            .rolling(252).mean()
+            excess.rolling(252).mean()
             .div(r["returns"].rolling(252).std())
             * np.sqrt(252)
         )
