@@ -79,6 +79,42 @@ def fetch_prices(tickers: list[str], start_year: int, start_month: int = 1, end_
     return prices
 
 
+def fetch_fx_rate(
+    currency: str,
+    start_year: int,
+    start_month: int = 1,
+    end_year: int | None = None,
+    end_month: int = 12,
+) -> pd.Series | None:
+    """
+    Download the USD-per-unit exchange rate for `currency` (e.g. "GBP" → GBPUSD=X).
+
+    Returns None when currency is "USD" (no conversion needed).
+    Raises ValueError if the data cannot be fetched.
+    """
+    if currency.upper() == "USD":
+        return None
+
+    import calendar
+    ticker = f"{currency.upper()}USD=X"
+    start = f"{start_year}-{start_month:02d}-01"
+    if end_year:
+        last_day = calendar.monthrange(end_year, end_month)[1]
+        end = f"{end_year}-{end_month:02d}-{last_day}"
+    else:
+        end = datetime.today().strftime("%Y-%m-%d")
+
+    raw = yf.download(ticker, start=start, end=end, auto_adjust=False, progress=False)
+    if raw.empty:
+        raise ValueError(
+            f"Could not fetch FX rate {ticker} for {start} → {end}. "
+            f"Check that the currency code is valid."
+        )
+    series = raw["Close"].squeeze()
+    series.name = f"{currency.upper()}USD"
+    return series
+
+
 def fetch_risk_free_rate(
     start_year: int,
     start_month: int = 1,
@@ -119,6 +155,7 @@ def simulate_portfolio(
     rebalance_annually: bool = False,
     ddca_thresholds: dict[str, float] | None = None,
     risk_free_rate: RateInput = 0.04,
+    fx_rate: pd.Series | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
     Simulate a portfolio with an initial lump-sum investment and fixed monthly DCA.
@@ -144,11 +181,20 @@ def simulate_portfolio(
     Tickers without a threshold entry use regular DCA.
     Negative-weight (short) tickers always use regular DCA regardless.
 
+    Currency conversion (`fx_rate`)
+    --------------------------------
+    Pass a pd.Series of USD-per-local-currency rates (e.g. GBPUSD) aligned to
+    trading dates.  When provided, `initial_investment` and `monthly_contribution`
+    are treated as local-currency amounts and converted to USD at each day's rate
+    before buying shares.  `total_invested` is returned in local currency.
+    `portfolio_values` and `reserve_values` are returned in USD — divide by the
+    fx_rate series after the call to convert to local currency.
+
     Returns
     -------
-    portfolio_values : pd.Series  — daily market value of shares + reserve
-    total_invested   : pd.Series  — cumulative cash committed (lump-sum + contributions)
-    reserve_values   : pd.Series  — daily total value sitting in the cash reserve
+    portfolio_values : pd.Series  — daily market value of shares + reserve (USD)
+    total_invested   : pd.Series  — cumulative cash committed in input currency
+    reserve_values   : pd.Series  — daily total value sitting in the cash reserve (USD)
     """
     tickers = list(weights.keys())
     w = np.array([weights[t] for t in tickers], dtype=float)
@@ -157,6 +203,12 @@ def simulate_portfolio(
     prices_sub = prices[tickers]
     prices_arr = prices_sub.values
     dates = prices_sub.index
+
+    # Pre-compute FX rate array aligned to price dates (USD per local currency unit)
+    if fx_rate is not None:
+        fx_arr = fx_rate.reindex(dates, method="ffill").bfill().values
+    else:
+        fx_arr = np.ones(len(dates))
 
     # Pre-compute a per-day risk-free rate array aligned to the price dates
     if isinstance(risk_free_rate, pd.Series):
@@ -172,8 +224,10 @@ def simulate_portfolio(
     }
 
     # Buy initial allocation at first-day open (approximated by first close)
-    shares = initial_investment * w / prices_arr[0]
-    total_invested_now = initial_investment
+    # Convert local currency to USD using the first day's FX rate
+    initial_usd = initial_investment * fx_arr[0]
+    shares = initial_usd * w / prices_arr[0]
+    total_invested_now = initial_investment  # tracked in local currency
     prev_month = dates[0].to_period("M")
     prev_year  = dates[0].year
 
@@ -196,9 +250,10 @@ def simulate_portfolio(
                     port_val = float(np.dot(shares, prices_arr[i]))
                     shares = port_val * w / prices_arr[i]
 
-                # Monthly contributions per ticker
+                # Monthly contributions per ticker (convert local → USD)
+                monthly_contrib_usd = monthly_contribution * fx_arr[i]
                 for j, t in enumerate(tickers):
-                    ticker_contrib = monthly_contribution * w[j]
+                    ticker_contrib = monthly_contrib_usd * w[j]
 
                     if t in reserves:  # DDCA-enabled long ticker
                         half = ticker_contrib / 2.0

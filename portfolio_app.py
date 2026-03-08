@@ -17,6 +17,7 @@ from plotly.subplots import make_subplots
 
 from portfolio_sim import (
     fetch_prices,
+    fetch_fx_rate,
     fetch_risk_free_rate,
     simulate_portfolio,
     portfolio_daily_returns,
@@ -196,11 +197,15 @@ if use_custom_end:
 else:
     end_year  = None
     end_month = 12
+CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€", "CHF": "CHF "}
+currency = st.sidebar.selectbox("Investment Currency", list(CURRENCY_SYMBOLS.keys()), index=0)
+ccy_sym = CURRENCY_SYMBOLS[currency]
+
 initial_inv = st.sidebar.number_input(
-    "Initial Investment ($)", min_value=0, max_value=10_000_000, value=10_000, step=1_000
+    f"Initial Investment ({currency})", min_value=0, max_value=10_000_000, value=10_000, step=1_000
 )
 monthly_contrib = st.sidebar.number_input(
-    "Monthly Contribution ($)", min_value=0, max_value=100_000, value=500, step=100
+    f"Monthly Contribution ({currency})", min_value=0, max_value=100_000, value=500, step=100
 )
 rebalance_annually = st.sidebar.checkbox(
     "Rebalance annually (each January)",
@@ -220,7 +225,7 @@ def pct(v):
     return f"{v * 100:.2f}%"
 
 def dollar(v):
-    return f"${v:,.0f}"
+    return f"{ccy_sym}{v:,.0f}"
 
 def fmt(key, v):
     if isinstance(v, float) and np.isnan(v):
@@ -325,21 +330,44 @@ if run_btn:
         st.error(str(e))
         st.stop()
     rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
+
+    # FX rate (USD per local currency unit); None when currency is USD
+    try:
+        fx_series = fetch_fx_rate(currency, start_year, start_month, end_year, end_month)
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
+
+    fx_info = ""
+    if fx_series is not None:
+        fx_aligned = fx_series.reindex(prices.index, method="ffill").bfill()
+        fx_info = f" · Avg {currency}/USD: **{fx_aligned.mean():.4f}**"
+
     st.info(
         f"Data: **{actual_start}** → **{actual_end}** "
         f"({len(prices):,} trading days, {len(all_tickers)} tickers) · "
-        f"Avg risk-free rate: **{rf_mean:.2%}** (^IRX)"
+        f"Avg risk-free rate: **{rf_mean:.2%}** (^IRX){fx_info}"
     )
 
     # ---- simulate ----
     results = []
     for cfg, color in zip(portfolio_cfgs, COLORS):
-        vals, invested, reserve = simulate_portfolio(
+        vals_usd, invested_local, reserve_usd = simulate_portfolio(
             prices, cfg["weights"], initial_inv, monthly_contrib,
             rebalance_annually=rebalance_annually,
             ddca_thresholds=cfg.get("ddca_thresholds") or None,
             risk_free_rate=rf_series,
+            fx_rate=fx_series,
         )
+        # Convert USD portfolio values to local currency
+        if fx_series is not None:
+            fx_al = fx_series.reindex(vals_usd.index, method="ffill").bfill()
+            vals    = vals_usd    / fx_al
+            reserve = reserve_usd / fx_al
+        else:
+            vals    = vals_usd
+            reserve = reserve_usd
+        invested = invested_local
         rets = returns_from_simulation(vals, invested)
         metrics = calculate_metrics(vals, invested, rets, rf_series)
         metrics["Long Exposure"] = sum(w for w in cfg["weights"].values() if w > 0)
@@ -408,8 +436,9 @@ if run_btn:
                 font=dict(size=15),
             ),
             xaxis_title="Date",
-            yaxis_title="Value (USD)",
-            yaxis_tickformat="$,.0f",
+            yaxis_title=f"Value ({currency})",
+            yaxis_tickprefix=ccy_sym,
+            yaxis_tickformat=",.0f",
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             height=430,
@@ -587,17 +616,26 @@ if run_btn:
             "Years Simulated",
         ]
 
+        # Rename ($) labels to reflect the actual display currency
+        label_map = {
+            "Total P&L ($)":    f"Total P&L ({currency})",
+            "Final Value ($)":  f"Final Value ({currency})",
+            "Total Invested ($)": f"Total Invested ({currency})",
+        }
+
         table_rows = {}
         for key in metric_order:
-            table_rows[key] = {r["name"]: fmt(key, r["metrics"].get(key, float("nan"))) for r in results}
+            display_key = label_map.get(key, key)
+            table_rows[display_key] = {r["name"]: fmt(key, r["metrics"].get(key, float("nan"))) for r in results}
 
         df_metrics = pd.DataFrame(table_rows).T
         df_metrics.index.name = "Metric"
 
         # Highlight better value (green for higher is better, red for lower)
         higher_is_better = {
-            "CAGR", "Cumulative Return (TWR)", "Total P&L ($)", "Total P&L (%)",
-            "Final Value ($)", "Sharpe Ratio", "Sortino Ratio", "Calmar Ratio",
+            "CAGR", "Cumulative Return (TWR)",
+            f"Total P&L ({currency})", "Total P&L (%)",
+            f"Final Value ({currency})", "Sharpe Ratio", "Sortino Ratio", "Calmar Ratio",
             "Best Year", "Win Rate (daily)",
         }
         lower_is_better = {"Annual Volatility", "Max Drawdown", "Max DD Duration (days)", "Worst Year"}

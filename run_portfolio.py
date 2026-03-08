@@ -20,6 +20,7 @@ import numpy as np
 
 from portfolio_sim import (
     fetch_prices,
+    fetch_fx_rate,
     fetch_risk_free_rate,
     simulate_portfolio,
     portfolio_daily_returns,
@@ -74,8 +75,9 @@ PORTFOLIOS = [
 ]
 
 START_YEAR           = 2021     # simulation start (data availability may push this later)
-INITIAL_INVESTMENT   = 100_000  # USD lump-sum at start
-MONTHLY_CONTRIBUTION = 0     # USD added every month
+CURRENCY             = "USD"    # investment currency: "USD", "GBP", "EUR", or "CHF"
+INITIAL_INVESTMENT   = 100_000  # lump-sum at start (in CURRENCY)
+MONTHLY_CONTRIBUTION = 0        # added every month (in CURRENCY)
 REBALANCE_ANNUALLY   = False    # rebalance to target weights each January
 
 # ===========================================================================
@@ -144,15 +146,29 @@ def run() -> None:
     rf_mean = rf_series.reindex(prices.index, method="ffill").bfill().mean()
     print(f"Risk-free rate: {rf_mean:.2%} avg (^IRX 3-month T-bill)")
 
+    fx_series = fetch_fx_rate(CURRENCY, START_YEAR)
+    if fx_series is not None:
+        fx_mean = fx_series.reindex(prices.index, method="ffill").bfill().mean()
+        print(f"Currency: {CURRENCY}  (avg {CURRENCY}/USD: {fx_mean:.4f})")
+
     # ------------------------------------------------------------ simulation
     results = []
     for p in PORTFOLIOS:
-        vals, invested, reserve = simulate_portfolio(
+        vals_usd, invested_local, reserve_usd = simulate_portfolio(
             prices, p["weights"], INITIAL_INVESTMENT, MONTHLY_CONTRIBUTION,
             rebalance_annually=REBALANCE_ANNUALLY,
             ddca_thresholds=p.get("ddca_thresholds"),
             risk_free_rate=rf_series,
+            fx_rate=fx_series,
         )
+        if fx_series is not None:
+            fx_al = fx_series.reindex(vals_usd.index, method="ffill").bfill()
+            vals    = vals_usd    / fx_al
+            reserve = reserve_usd / fx_al
+        else:
+            vals    = vals_usd
+            reserve = reserve_usd
+        invested = invested_local
         rets = returns_from_simulation(vals, invested)
         metrics = calculate_metrics(vals, invested, rets, rf_series)
         metrics["Long Exposure"] = sum(w for w in p["weights"].values() if w > 0)
