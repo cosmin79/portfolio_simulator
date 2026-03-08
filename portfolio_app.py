@@ -157,7 +157,7 @@ for i, (label, defaults) in enumerate(zip(_LABELS, _DEFAULTS)):
 st.sidebar.divider()
 st.sidebar.header("Investment Settings")
 
-start_year = st.sidebar.slider("Start Year", 2000, 2024, 2015)
+start_year = st.sidebar.slider("Start Year", 1970, 2024, 2015)
 initial_inv = st.sidebar.number_input(
     "Initial Investment ($)", min_value=0, max_value=10_000_000, value=10_000, step=1_000
 )
