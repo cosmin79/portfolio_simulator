@@ -126,15 +126,58 @@ Opens a web UI at `http://localhost:8501`.
 
 ## Ticker symbols
 
-Use Yahoo Finance symbols — examples:
+Use Yahoo Finance symbols. Useful tickers by asset class:
 
-| Type | Examples |
+### Equities
+| Ticker | Name | Data from |
+|---|---|---|
+| `VOO` | S&P 500 (Vanguard) | 2010 |
+| `SPY` | S&P 500 (SPDR) | 1993 |
+| `VTI` | US Total Stock Market | 2001 |
+| `VT` | World Total Stock Market | 2008 |
+| `QQQ` | Nasdaq-100 | 1999 |
+| `VXUS` | Total International (ex-US) | 2011 |
+| `EWJ` | Japan | 1996 |
+
+### Bonds
+| Ticker | Name | Data from |
+|---|---|---|
+| `AGG` | US Aggregate Bond Market | 2003 |
+| `BND` | US Aggregate Bond Market (Vanguard) | 2007 |
+| `LQD` | Investment Grade Corporate Bonds | 2002 |
+| `TLT` | 20+ Year US Treasuries | 2002 |
+| `IEF` | 7–10 Year US Treasuries | 2002 |
+
+### Cash / T-bills
+| Ticker | Name | Data from |
+|---|---|---|
+| `BIL` | 1–3 Month T-bills | 2007 |
+| `SHY` | 1–3 Year Treasuries | 2002 |
+
+Use a **negative weight** on a cash/T-bill ticker to model borrowing cost (e.g. `"BIL": -0.33` for 33% leverage).
+
+### Commodities
+| Ticker | Name | Data from |
+|---|---|---|
+| `GLD` | Gold | 2004 |
+| `GCC` | Diversified Commodity Basket (equal-weight) | 2008 |
+| `DBC` | Diversified Commodity Basket (energy-heavy) | 2006 |
+| `DJP` | Bloomberg Commodity Index ETN | 2006 |
+
+### Alternatives / Managed Futures (CTAs)
+| Ticker | Name | Data from |
+|---|---|---|
+| `DBMF` | iMGP DBi Managed Futures (replicates top CTAs) | 2019 |
+| `AMFAX` | AQR Managed Futures (mutual fund) | 2010 |
+| `WTMF` | WisdomTree Managed Futures | 2011 |
+
+### Individual stocks & crypto
+| Ticker | Examples |
 |---|---|
-| US ETFs | `SPY`, `VTI`, `VT`, `QQQ`, `BND`, `GLD`, `GCC` |
-| Cash proxy | `BIL` (1-3 month T-bills) — use a negative weight to model borrowing cost |
 | Stocks | `AAPL`, `TSLA`, `PLTR` |
 | Crypto | `BTC-USD`, `ETH-USD` |
-| International | `EWJ` (Japan), `VXUS` (ex-US) |
+
+---
 
 The simulation starts from whichever date **all** tickers in **all** portfolios
 have data — so adding a recently-listed ticker will shorten the backtest window.
