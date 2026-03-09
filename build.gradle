@@ -1,0 +1,91 @@
+/**
+ * Gradle build file for portfolio-simulator (Python project).
+ *
+ * Install Gradle:  brew install gradle
+ * Then run:        gradle unitTest          # fast, no network
+ *                  gradle integrationTest   # requires Yahoo Finance access
+ *                  gradle test              # all tests
+ *                  gradle run               # launch the CLI simulation
+ *
+ * All tasks call into the project's .venv Python environment.
+ * Run `gradle setup` first if the venv does not exist yet.
+ */
+
+plugins {
+    id 'base'
+}
+
+// ── paths ────────────────────────────────────────────────────────────────────
+def projectRoot = projectDir.absolutePath
+def python      = "${projectRoot}/.venv/bin/python"
+def pip         = "${projectRoot}/.venv/bin/pip"
+
+// ── environment setup ────────────────────────────────────────────────────────
+
+tasks.register('createVenv', Exec) {
+    description = 'Create the Python virtual environment (skipped if it already exists).'
+    group       = 'Setup'
+    onlyIf { !file("${projectRoot}/.venv").exists() }
+    commandLine 'python3', '-m', 'venv', "${projectRoot}/.venv"
+}
+
+tasks.register('install', Exec) {
+    description = 'Install project dependencies from requirements.txt.'
+    group       = 'Setup'
+    dependsOn   'createVenv'
+    commandLine pip, 'install', '-r', 'requirements.txt', '-q'
+}
+
+tasks.register('installTestDeps', Exec) {
+    description = 'Install pytest and coverage tooling.'
+    group       = 'Setup'
+    dependsOn   'install'
+    commandLine pip, 'install', 'pytest', 'pytest-cov', '-q'
+}
+
+// ── testing ──────────────────────────────────────────────────────────────────
+
+tasks.register('unitTest', Exec) {
+    description = 'Run unit tests only (no network required).'
+    group       = 'Verification'
+    dependsOn   'installTestDeps'
+    commandLine python, '-m', 'pytest', 'tests/', '-v',
+                '-m', 'not integration',
+                '--cov=portfolio_sim', '--cov-report=term-missing'
+}
+
+tasks.register('integrationTest', Exec) {
+    description = 'Run integration tests (requires live Yahoo Finance access).'
+    group       = 'Verification'
+    dependsOn   'installTestDeps'
+    commandLine python, '-m', 'pytest', 'tests/', '-v',
+                '-m', 'integration'
+}
+
+tasks.register('test', Exec) {
+    description = 'Run the full test suite (unit + integration).'
+    group       = 'Verification'
+    dependsOn   'installTestDeps'
+    commandLine python, '-m', 'pytest', 'tests/', '-v',
+                '--cov=portfolio_sim', '--cov-report=term-missing'
+}
+
+// ── running ──────────────────────────────────────────────────────────────────
+
+tasks.register('run', Exec) {
+    description = 'Run the CLI portfolio simulation (run_portfolio.py).'
+    group       = 'Application'
+    dependsOn   'install'
+    commandLine python, 'run_portfolio.py'
+}
+
+tasks.register('app', Exec) {
+    description = 'Launch the Streamlit portfolio app.'
+    group       = 'Application'
+    dependsOn   'install'
+    commandLine "${projectRoot}/.venv/bin/streamlit", 'run', 'portfolio_app.py'
+}
+
+// ── lifecycle hooks ──────────────────────────────────────────────────────────
+check.dependsOn 'unitTest'
+build.dependsOn 'test'
