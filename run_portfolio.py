@@ -29,49 +29,46 @@ from portfolio_sim import (
     correlation_matrix,
     drawdown_series,
     annual_returns_table,
+    rolling_window_analysis,
+    rolling_window_summary,
 )
 
 # ===========================================================================
 # CONFIGURATION — edit this section
 # ===========================================================================
 
+# Pick two portfolios from the PRESET_PORTFOLIOS dict below (or define your own).
+# Each entry needs "name" and "weights". Optional: "ddca_thresholds".
+#
+# Example with DDCA:
 # {
 #     "name": "All weather portfolio",
-#     "weights": {
-#         "VT":  0.603,
-#         "BND": 0.402,
-#         "BIL": -0.335,
-#         "GCC":  0.165,
-#         "GLD":  0.165,
-#     },
-#     # Optional: per-ticker Double DCA thresholds.
-#     # Tickers listed here use DDCA; others use regular DCA.
-#     # Value = how far below 52-week high triggers the double-down (e.g. 0.10 = 10%).
-#     "ddca_thresholds": {
-#         "VT":  0.10,
-#         "GCC": 0.10,
-#         "GLD": 0.10,
-#     },
+#     "weights": {"VT": 0.603, "BND": 0.402, "BIL": -0.335, "GCC": 0.165, "GLD": 0.165},
+#     "ddca_thresholds": {"VT": 0.10, "GCC": 0.10, "GLD": 0.10},
 # }
 
+PRESET_PORTFOLIOS = {
+    # --- Custom / leveraged ---
+    "All Weather CTA":       {"VT": 0.603, "AGG": 0.402, "LQD": -0.335, "AMFAX": 0.330},
+    "All Weather Commodity":  {"VT": 0.603, "AGG": 0.402, "LQD": -0.335, "GLD": 0.165, "GCC": 0.165},
+    # --- Classic allocations (source: portfoliocharts.com) ---
+    "Total Stock Market":     {"VTI": 1.0},
+    "Classic 60-40":          {"VTI": 0.60, "AGG": 0.40},
+    "Three-Fund":             {"VTI": 0.64, "EFA": 0.16, "AGG": 0.20},
+    "No-Brainer":             {"VTI": 0.25, "VB": 0.25, "EFA": 0.25, "SHY": 0.25},
+    "Core Four":              {"VTI": 0.48, "EFA": 0.24, "AGG": 0.20, "VNQ": 0.08},
+    "Permanent":              {"VTI": 0.25, "TLT": 0.25, "BIL": 0.25, "GLD": 0.25},
+    "Larry":                  {"VBR": 0.15, "DLS": 0.075, "VWO": 0.075, "AGG": 0.70},
+    "Golden Butterfly":       {"VTI": 0.20, "VBR": 0.20, "TLT": 0.20, "SHY": 0.20, "GLD": 0.20},
+    "All Seasons":            {"VTI": 0.30, "TLT": 0.40, "AGG": 0.15, "GSG": 0.075, "GLD": 0.075},
+    "Ivy Portfolio":          {"VTI": 0.20, "EFA": 0.20, "AGG": 0.20, "GSG": 0.20, "VNQ": 0.20},
+    "Swensen":                {"VTI": 0.30, "EFA": 0.15, "VWO": 0.05, "AGG": 0.30, "VNQ": 0.20},
+    "Weird Portfolio":        {"VBR": 0.20, "SCZ": 0.20, "TLT": 0.20, "VNQ": 0.20, "GLD": 0.20},
+}
+
 PORTFOLIOS = [
-    {
-        "name": "All weather portfolio",
-        "weights": {
-            "VT":  0.603,
-            "BND": 0.402,
-            "BIL": -0.335,
-            "GCC":  0.165,
-            "GLD":  0.165,
-        },
-    },
-    {
-        "name": "All world",
-        "weights": {
-            "VT":  1.0,
-        },
-        # No ddca_thresholds key → plain DCA for all tickers
-    },
+    {"name": "Golden Butterfly", "weights": PRESET_PORTFOLIOS["Golden Butterfly"]},
+    {"name": "All Seasons",      "weights": PRESET_PORTFOLIOS["All Seasons"]},
 ]
 
 START_YEAR           = 2021     # simulation start (data availability may push this later)
@@ -79,6 +76,8 @@ CURRENCY             = "USD"    # investment currency: "USD", "GBP", "EUR", or "
 INITIAL_INVESTMENT   = 100_000  # lump-sum at start (in CURRENCY)
 MONTHLY_CONTRIBUTION = 0        # added every month (in CURRENCY)
 REBALANCE_ANNUALLY   = False    # rebalance to target weights each January
+ROLLING_WINDOW_YEARS = 5        # rolling window length for worst/median/best period analysis (0 = skip)
+ROLLING_RANK_BY      = "CAGR"   # metric to rank periods: "CAGR", "Sharpe Ratio", "Max Drawdown", etc.
 
 # ===========================================================================
 # — nothing below here needs changing —
@@ -408,12 +407,134 @@ def run() -> None:
         for j in range(len(col_labels)):
             tbl[i, j].set_facecolor(bg)
 
+    # ================================================================ Fig 5
+    # Rolling window analysis — worst / median / best periods
+    # ================================================================
+    figs_to_save = [
+        (fig1, "portfolio_overview.png"),
+        (fig2, "portfolio_risk.png"),
+        (fig3, "portfolio_assets.png"),
+        (fig4, "portfolio_metrics.png"),
+    ]
+
+    if ROLLING_WINDOW_YEARS > 0:
+        print(f"\nRolling {ROLLING_WINDOW_YEARS}-year window analysis (rank by {ROLLING_RANK_BY})…")
+        n_portfolios = len(results)
+        fig5, axes5 = plt.subplots(
+            n_portfolios, 2,
+            figsize=(16, 5 * n_portfolios),
+            constrained_layout=True,
+            squeeze=False,
+        )
+        fig5.suptitle(
+            f"Rolling {ROLLING_WINDOW_YEARS}-Year Period Analysis — "
+            f"Ranked by {ROLLING_RANK_BY}\n{subtitle}",
+            fontsize=12, fontweight="bold",
+        )
+
+        for row_idx, (r, color) in enumerate(zip(results, COLORS)):
+            try:
+                rwa = rolling_window_analysis(
+                    prices, r["weights"], INITIAL_INVESTMENT, MONTHLY_CONTRIBUTION,
+                    window_years=ROLLING_WINDOW_YEARS,
+                    rank_by=ROLLING_RANK_BY,
+                    rebalance_annually=REBALANCE_ANNUALLY,
+                    ddca_thresholds=r.get("ddca") or None,
+                    risk_free_rate=rf_series,
+                    fx_rate=fx_series,
+                )
+            except ValueError as e:
+                axes5[row_idx, 0].text(0.5, 0.5, str(e), ha="center", va="center", fontsize=10)
+                axes5[row_idx, 0].set_title(r["name"])
+                axes5[row_idx, 1].axis("off")
+                continue
+
+            summary = rolling_window_summary(rwa, rank_by=ROLLING_RANK_BY)
+
+            # Left panel: histogram of the rank metric across all windows
+            ax_hist = axes5[row_idx, 0]
+            metric_vals = rwa[ROLLING_RANK_BY]
+            is_pct_metric = ROLLING_RANK_BY in (
+                "CAGR", "Max Drawdown", "Annual Volatility", "Cumulative Return (TWR)",
+            )
+            plot_vals = metric_vals * 100 if is_pct_metric else metric_vals
+            ax_hist.hist(plot_vals, bins=25, color=color, alpha=0.75, edgecolor="white")
+            suffix = "%" if is_pct_metric else ""
+
+            # Mark worst, median, best
+            for label, style, key in [
+                ("Worst",  {"color": "#E53935", "ls": "--", "lw": 2}, "worst"),
+                ("Median", {"color": "#FFC107", "ls": "-",  "lw": 2}, "median"),
+                ("Best",   {"color": "#4CAF50", "ls": "--", "lw": 2}, "best"),
+            ]:
+                val = summary[key][ROLLING_RANK_BY]
+                plot_v = val * 100 if is_pct_metric else val
+                ax_hist.axvline(plot_v, **style, label=f"{label}: {plot_v:.2f}{suffix}")
+
+            ax_hist.set_title(f"{r['name']} — {ROLLING_RANK_BY} Distribution ({len(rwa)} windows)")
+            ax_hist.set_xlabel(f"{ROLLING_RANK_BY} ({suffix.strip()})" if suffix else ROLLING_RANK_BY)
+            ax_hist.set_ylabel("Count")
+            ax_hist.legend(fontsize=8)
+
+            # Right panel: summary table
+            ax_tbl = axes5[row_idx, 1]
+            ax_tbl.axis("off")
+            summary_keys = [
+                "CAGR", "Sharpe Ratio", "Max Drawdown",
+                "Annual Volatility", "Cumulative Return (TWR)",
+                "Final Value ($)", "Total Invested ($)",
+            ]
+            col_labels = ["Metric", "Worst", "Median", "Best"]
+            tbl_data = []
+            for mk in summary_keys:
+                row_data = [mk]
+                for period in ("worst", "median", "best"):
+                    row_data.append(fmt_metric(mk, summary[period].get(mk, float("nan"))))
+                tbl_data.append(row_data)
+            # Add start/end dates
+            for date_key in ("start_date", "end_date"):
+                label = "Start" if "start" in date_key else "End"
+                row_data = [label]
+                for period in ("worst", "median", "best"):
+                    d = summary[period][date_key]
+                    row_data.append(d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d))
+                tbl_data.append(row_data)
+
+            tbl = ax_tbl.table(
+                cellText=tbl_data,
+                colLabels=col_labels,
+                cellLoc="center",
+                loc="center",
+                bbox=[0, 0, 1, 1],
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(9)
+            tbl.auto_set_column_width(list(range(len(col_labels))))
+            for j in range(len(col_labels)):
+                tbl[0, j].set_facecolor("#37474F")
+                tbl[0, j].set_text_props(color="white", fontweight="bold")
+            for i in range(1, len(tbl_data) + 1):
+                bg = "#FAFAFA" if i % 2 == 0 else "#ECEFF1"
+                for j in range(len(col_labels)):
+                    tbl[i, j].set_facecolor(bg)
+            ax_tbl.set_title(f"{r['name']} — Worst / Median / Best {ROLLING_WINDOW_YEARS}yr Period")
+
+            # Print summary to console
+            print(f"\n  {r['name']}:")
+            for period in ("worst", "median", "best"):
+                s = summary[period]
+                start_str = s["start_date"].strftime("%Y-%m-%d") if hasattr(s["start_date"], "strftime") else s["start_date"]
+                end_str = s["end_date"].strftime("%Y-%m-%d") if hasattr(s["end_date"], "strftime") else s["end_date"]
+                print(f"    {period.capitalize():>6}: {start_str} → {end_str}  "
+                      f"CAGR={s['CAGR']:.2%}  Sharpe={s['Sharpe Ratio']:.3f}  MaxDD={s['Max Drawdown']:.2%}")
+
+        figs_to_save.append((fig5, "portfolio_periods.png"))
+
     # ================================================================ Save & show
-    fig1.savefig("portfolio_overview.png",  dpi=150, bbox_inches="tight")
-    fig2.savefig("portfolio_risk.png",      dpi=150, bbox_inches="tight")
-    fig3.savefig("portfolio_assets.png",    dpi=150, bbox_inches="tight")
-    fig4.savefig("portfolio_metrics.png",   dpi=150, bbox_inches="tight")
-    print("Saved → portfolio_overview.png, portfolio_risk.png, portfolio_assets.png, portfolio_metrics.png")
+    for fig, fname in figs_to_save:
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
+    saved = ", ".join(f for _, f in figs_to_save)
+    print(f"Saved → {saved}")
     plt.show()
 
 

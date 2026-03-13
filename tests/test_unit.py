@@ -21,6 +21,8 @@ from portfolio_sim import (
     suggest_ddca_thresholds,
     portfolio_daily_returns,
     correlation_matrix,
+    rolling_window_analysis,
+    rolling_window_summary,
 )
 
 
@@ -721,3 +723,129 @@ class TestCorrelationMatrix:
         configs = [{"weights": {"UP": 0.5, "DOWN": 0.5}}]
         corr = correlation_matrix(prices, configs)
         assert corr.loc["UP", "DOWN"] == pytest.approx(-1.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# rolling_window_analysis
+# ---------------------------------------------------------------------------
+
+class TestRollingWindowAnalysis:
+
+    def _make_long_prices(self, n_years=8, daily_return=0.0003):
+        """Create price data spanning multiple years for rolling window tests."""
+        n_days = int(n_years * 252)
+        dates = pd.bdate_range("2010-01-04", periods=n_days)
+        arr = 100.0 * np.cumprod(np.full(n_days, 1.0 + daily_return))
+        return pd.DataFrame({"SPY": arr}, index=dates)
+
+    def test_returns_dataframe_with_expected_columns(self):
+        prices = self._make_long_prices(n_years=8)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        expected_cols = {
+            "start_date", "end_date", "CAGR", "Sharpe Ratio", "Sortino Ratio",
+            "Max Drawdown", "Annual Volatility", "Cumulative Return (TWR)",
+            "Final Value ($)", "Total Invested ($)",
+        }
+        assert expected_cols == set(df.columns)
+
+    def test_multiple_windows_generated(self):
+        """8 years of data with 3-year window → many windows."""
+        prices = self._make_long_prices(n_years=8)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        # ~5 years of valid start dates → ~60 monthly windows
+        assert len(df) > 40
+
+    def test_sorted_by_rank_metric(self):
+        """Result should be sorted ascending by rank_by metric."""
+        prices = self._make_long_prices(n_years=8)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3, rank_by="CAGR",
+        )
+        assert list(df["CAGR"]) == sorted(df["CAGR"])
+
+    def test_error_when_history_too_short(self):
+        """Should raise when price history is shorter than window."""
+        prices = make_prices(n_days=252)  # ~1 year
+        with pytest.raises(ValueError, match="shorter than"):
+            rolling_window_analysis(
+                prices, {"SPY": 1.0}, 10000, 500, window_years=5,
+            )
+
+    def test_constant_prices_cagr_near_zero(self):
+        """Flat prices → CAGR should be near zero for all windows."""
+        prices = make_prices(n_days=252 * 6, price=100.0, start="2010-01-04")
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        # With flat prices and DCA, final value equals total invested
+        # CAGR comes from TWR which should be ~0
+        assert df["CAGR"].abs().max() < 0.01
+
+    def test_rank_by_sharpe(self):
+        """Can rank by Sharpe Ratio instead of CAGR."""
+        prices = self._make_long_prices(n_years=8)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+            rank_by="Sharpe Ratio",
+        )
+        assert list(df["Sharpe Ratio"]) == sorted(df["Sharpe Ratio"])
+
+    def test_window_dates_within_bounds(self):
+        """All windows should start and end within the price data range."""
+        prices = self._make_long_prices(n_years=8)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        assert df["start_date"].min() >= prices.index[0]
+        assert df["end_date"].max() <= prices.index[-1]
+
+    def test_two_ticker_portfolio(self):
+        """Works with multi-ticker portfolios."""
+        n_days = 252 * 8
+        dates = pd.bdate_range("2010-01-04", periods=n_days)
+        prices = pd.DataFrame({
+            "A": 100.0 * np.cumprod(np.full(n_days, 1.0003)),
+            "B": 50.0 * np.cumprod(np.full(n_days, 1.0005)),
+        }, index=dates)
+        df = rolling_window_analysis(
+            prices, {"A": 0.6, "B": 0.4}, 10000, 500, window_years=3,
+        )
+        assert len(df) > 0
+        assert all(df["Final Value ($)"] > 0)
+
+
+class TestRollingWindowSummary:
+
+    def test_returns_worst_median_best(self):
+        n_days = 252 * 8
+        dates = pd.bdate_range("2010-01-04", periods=n_days)
+        prices = pd.DataFrame({
+            "SPY": 100.0 * np.cumprod(np.full(n_days, 1.0003)),
+        }, index=dates)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        summary = rolling_window_summary(df, rank_by="CAGR")
+
+        assert set(summary.keys()) == {"worst", "median", "best"}
+        assert summary["worst"]["CAGR"] <= summary["median"]["CAGR"]
+        assert summary["median"]["CAGR"] <= summary["best"]["CAGR"]
+
+    def test_summary_contains_dates(self):
+        n_days = 252 * 8
+        dates = pd.bdate_range("2010-01-04", periods=n_days)
+        prices = pd.DataFrame({
+            "SPY": 100.0 * np.cumprod(np.full(n_days, 1.0003)),
+        }, index=dates)
+        df = rolling_window_analysis(
+            prices, {"SPY": 1.0}, 10000, 500, window_years=3,
+        )
+        summary = rolling_window_summary(df)
+        for period in ("worst", "median", "best"):
+            assert "start_date" in summary[period]
+            assert "end_date" in summary[period]
+

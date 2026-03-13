@@ -27,6 +27,8 @@ from portfolio_sim import (
     drawdown_series,
     annual_returns_table,
     suggest_ddca_thresholds,
+    rolling_window_analysis,
+    rolling_window_summary,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ st.caption("Compare two portfolios with DCA · Sharpe · Sortino · Drawdown · 
 COLORS = ["#2196F3", "#FF5722", "#4CAF50"]   # blue, deep-orange, green
 
 PRESETS: dict[str, list[tuple[str, float]]] = {
+    # --- Custom / leveraged ---
     "All Weather CTA": [
         ("SPY",   0.603),
         ("AGG",   0.402),
@@ -62,9 +65,77 @@ PRESETS: dict[str, list[tuple[str, float]]] = {
         ("GLD",  0.165),
         ("GCC",  0.165),
     ],
-    "60 / 40": [
-        ("SPY", 0.6),
-        ("AGG", 0.4),
+    # --- Classic allocations (portfoliocharts.com) ---
+    "Total Stock Market": [
+        ("VTI", 1.0),
+    ],
+    "Classic 60-40 (Bogle)": [
+        ("VTI", 0.60),
+        ("AGG", 0.40),
+    ],
+    "Three-Fund (Bogleheads)": [
+        ("VTI", 0.64),
+        ("EFA", 0.16),
+        ("AGG", 0.20),
+    ],
+    "No-Brainer (Bernstein)": [
+        ("VTI", 0.25),
+        ("VB",  0.25),
+        ("EFA", 0.25),
+        ("SHY", 0.25),
+    ],
+    "Core Four (Ferri)": [
+        ("VTI", 0.48),
+        ("EFA", 0.24),
+        ("AGG", 0.20),
+        ("VNQ", 0.08),
+    ],
+    "Permanent (Harry Browne)": [
+        ("VTI", 0.25),
+        ("TLT", 0.25),
+        ("BIL", 0.25),
+        ("GLD", 0.25),
+    ],
+    "Larry (Swedroe)": [
+        ("VBR", 0.15),
+        ("DLS", 0.075),
+        ("VWO", 0.075),
+        ("AGG", 0.70),
+    ],
+    "Golden Butterfly": [
+        ("VTI", 0.20),
+        ("VBR", 0.20),
+        ("TLT", 0.20),
+        ("SHY", 0.20),
+        ("GLD", 0.20),
+    ],
+    "All Seasons (Dalio)": [
+        ("VTI", 0.30),
+        ("TLT", 0.40),
+        ("AGG", 0.15),
+        ("GSG", 0.075),
+        ("GLD", 0.075),
+    ],
+    "Ivy Portfolio (Faber)": [
+        ("VTI", 0.20),
+        ("EFA", 0.20),
+        ("AGG", 0.20),
+        ("GSG", 0.20),
+        ("VNQ", 0.20),
+    ],
+    "Swensen (Yale)": [
+        ("VTI", 0.30),
+        ("EFA", 0.15),
+        ("VWO", 0.05),
+        ("AGG", 0.30),
+        ("VNQ", 0.20),
+    ],
+    "Weird Portfolio": [
+        ("VBR", 0.20),
+        ("SCZ", 0.20),
+        ("TLT", 0.20),
+        ("VNQ", 0.20),
+        ("GLD", 0.20),
     ],
 }
 
@@ -132,7 +203,7 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
 
     if not weights_raw:
         st.sidebar.error(f"{label}: no valid weights entered.")
-        return weights_raw, {}
+        return weights_raw, {}, selected_preset
 
     net = sum(weights_raw.values())
     is_leveraged = any(w < 0 for w in weights_raw.values())
@@ -156,7 +227,7 @@ def portfolio_input_block(label: str, default_tickers: list[tuple[str, float]]) 
         ddca_summary = ", ".join(f"{t} {v:.0%}" for t, v in ddca_raw.items())
         st.sidebar.info(f"{label}: DDCA active — {ddca_summary}")
 
-    return weights_raw, ddca_raw
+    return weights_raw, ddca_raw, selected_preset
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +246,9 @@ portfolio_inputs = []
 for i, (label, defaults) in enumerate(zip(_LABELS, _DEFAULTS)):
     if i > 0:
         st.sidebar.divider()
-    weights, ddca = portfolio_input_block(label, defaults)
-    name = st.sidebar.text_input(f"Name for {label}", value=label, key=f"name_{i}")
+    weights, ddca, preset_name = portfolio_input_block(label, defaults)
+    default_name = preset_name if preset_name != "Custom" else label
+    name = st.sidebar.text_input(f"Name for {label}", value=default_name, key=f"name_{i}_{preset_name}")
     portfolio_inputs.append({"name": name, "weights": weights, "ddca_thresholds": ddca})
 
 # ---------------------------------------------------------------------------
@@ -213,9 +285,32 @@ rebalance_annually = st.sidebar.checkbox(
     help="On the first trading day of each new year, sell/buy assets to restore target weights.",
 )
 
+st.sidebar.divider()
+st.sidebar.header("Rolling Period Analysis")
+rolling_window_years = st.sidebar.slider(
+    "Window length (years)", 1, 20, 5,
+    help="Slide a fixed-length window across history to find the worst, median, and best starting periods.",
+)
+rolling_rank_by = st.sidebar.selectbox(
+    "Rank periods by",
+    ["CAGR", "Sharpe Ratio", "Max Drawdown", "Sortino Ratio", "Annual Volatility"],
+    index=0,
+    help="Which metric to use for determining worst/median/best.",
+)
+
 run_btn      = st.sidebar.button("Run Simulation", type="primary", use_container_width=True)
+compare_btn  = st.sidebar.button("Compare All Presets", use_container_width=True,
+                                  help="Run every preset portfolio with the current investment settings and rank them side by side.")
 suggest_btn  = st.sidebar.button("Suggest DDCA Thresholds", use_container_width=True,
                                   help="Fetch price history and recommend per-ticker thresholds based on historical drawdown distribution.")
+
+# Persist compare mode across reruns so that interacting with widgets inside
+# the compare block doesn't reset the page.
+if compare_btn:
+    st.session_state["compare_active"] = True
+if run_btn or suggest_btn:
+    st.session_state["compare_active"] = False
+compare_active = st.session_state.get("compare_active", False)
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -299,10 +394,266 @@ if suggest_btn:
 
 
 # ---------------------------------------------------------------------------
+# Compare all presets
+# ---------------------------------------------------------------------------
+
+if compare_active:
+    # ------------------------------------------------------------------
+    # Step 1: Fetch data & run all simulations ONCE, cache in session_state
+    # ------------------------------------------------------------------
+    if compare_btn or "compare_results" not in st.session_state:
+        preset_cfgs = [
+            (name, tickers)
+            for name, tickers in PRESETS.items()
+            if all(w >= 0 for _, w in tickers)
+        ]
+
+        all_preset_tickers = list(dict.fromkeys(
+            t for _, tickers in preset_cfgs for t, _ in tickers
+        ))
+
+        with st.spinner(f"Downloading data for {len(all_preset_tickers)} tickers across {len(preset_cfgs)} presets…"):
+            try:
+                import warnings as _warnings
+                with _warnings.catch_warnings(record=True) as _caught:
+                    _warnings.simplefilter("always")
+                    prices = fetch_prices(all_preset_tickers, start_year, start_month, end_year, end_month)
+                for w in _caught:
+                    st.warning(str(w.message))
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
+
+        try:
+            rf_series = fetch_risk_free_rate(start_year, start_month, end_year, end_month)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+
+        try:
+            fx_series = fetch_fx_rate(currency, start_year, start_month, end_year, end_month)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+
+        # Run single-period simulation + rolling window analysis for each preset
+        single_period_rows = []
+        rolling_results = {}   # name → rolling_window_analysis DataFrame
+        value_series = {}
+        skipped = []
+        progress = st.progress(0, text="Simulating presets…")
+
+        for idx, (name, ticker_weights) in enumerate(preset_cfgs):
+            weights = {t: w for t, w in ticker_weights}
+            missing = [t for t in weights if t not in prices.columns]
+            if missing:
+                skipped.append(f"{name} (missing {', '.join(missing)})")
+                progress.progress((idx + 1) / len(preset_cfgs))
+                continue
+
+            # Single period simulation
+            try:
+                vals_usd, invested_local, _ = simulate_portfolio(
+                    prices, weights, initial_inv, monthly_contrib,
+                    rebalance_annually=rebalance_annually,
+                    risk_free_rate=rf_series,
+                    fx_rate=fx_series,
+                )
+                if fx_series is not None:
+                    fx_al = fx_series.reindex(vals_usd.index, method="ffill").bfill()
+                    vals = vals_usd / fx_al
+                else:
+                    vals = vals_usd
+                invested = invested_local
+                rets = returns_from_simulation(vals, invested)
+                metrics = calculate_metrics(vals, invested, rets, rf_series)
+                single_period_rows.append({"Portfolio": name, **metrics})
+                value_series[name] = vals
+            except Exception:
+                skipped.append(name)
+                progress.progress((idx + 1) / len(preset_cfgs))
+                continue
+
+            # Rolling window analysis
+            try:
+                rwa = rolling_window_analysis(
+                    prices, weights, initial_inv, monthly_contrib,
+                    window_years=rolling_window_years,
+                    rank_by="CAGR",  # rank_by doesn't matter for storage; we re-sort later
+                    rebalance_annually=rebalance_annually,
+                    risk_free_rate=rf_series,
+                    fx_rate=fx_series,
+                )
+                rolling_results[name] = rwa
+            except ValueError:
+                pass  # not enough history for this preset — rolling will be unavailable
+
+            progress.progress((idx + 1) / len(preset_cfgs), text=f"Simulated {idx + 1}/{len(preset_cfgs)}…")
+        progress.empty()
+
+        st.session_state["compare_results"] = {
+            "single_period_rows": single_period_rows,
+            "rolling_results": rolling_results,
+            "value_series": value_series,
+            "skipped": skipped,
+            "actual_start": prices.index[0].date(),
+            "actual_end": prices.index[-1].date(),
+            "invested": invested,
+            "n_trading_days": len(prices),
+        }
+
+    # ------------------------------------------------------------------
+    # Step 2: Render from cached results (survives widget interactions)
+    # ------------------------------------------------------------------
+    cached = st.session_state["compare_results"]
+    actual_start = cached["actual_start"]
+    actual_end = cached["actual_end"]
+
+    st.info(
+        f"Data: **{actual_start}** → **{actual_end}** "
+        f"({cached['n_trading_days']:,} trading days) · "
+        f"Initial: **{dollar(initial_inv)}** + **{dollar(monthly_contrib)}/mo**"
+    )
+
+    compare_mode = st.radio(
+        "Comparison mode",
+        ["Single period", "Worst period", "Median period", "Best period"],
+        horizontal=True,
+        help=(
+            "**Single period**: simulate from the sidebar start→end dates. "
+            "**Worst/Median/Best period**: run rolling window analysis and rank each "
+            "preset by its worst, median, or best N-year window."
+        ),
+    )
+    use_rolling = compare_mode != "Single period"
+
+    rank_metric = st.selectbox(
+        "Rank by", ["CAGR", "Sharpe Ratio", "Sortino Ratio", "Max Drawdown", "Annual Volatility"],
+        index=0, key="compare_rank_metric",
+    )
+
+    if cached["skipped"]:
+        st.warning(f"Skipped: {', '.join(cached['skipped'])}")
+
+    # Build leaderboard from cached data
+    if use_rolling:
+        period_key = {"Worst period": "worst", "Median period": "median", "Best period": "best"}[compare_mode]
+        leaderboard_rows = []
+        for name, rwa in cached["rolling_results"].items():
+            summary = rolling_window_summary(rwa, rank_by=rank_metric)
+            s = summary[period_key]
+            start_str = s["start_date"].strftime("%Y-%m-%d") if hasattr(s["start_date"], "strftime") else str(s["start_date"])
+            end_str = s["end_date"].strftime("%Y-%m-%d") if hasattr(s["end_date"], "strftime") else str(s["end_date"])
+            leaderboard_rows.append({
+                "Portfolio": name,
+                "Period": f"{start_str} → {end_str}",
+                "Windows": len(rwa),
+                "CAGR": s["CAGR"],
+                "Sharpe Ratio": s["Sharpe Ratio"],
+                "Sortino Ratio": s["Sortino Ratio"],
+                "Max Drawdown": s["Max Drawdown"],
+                "Annual Volatility": s["Annual Volatility"],
+                "Cumulative Return (TWR)": s["Cumulative Return (TWR)"],
+                "Final Value ($)": s["Final Value ($)"],
+                "Total Invested ($)": s["Total Invested ($)"],
+            })
+        if not leaderboard_rows:
+            st.error(f"No presets have enough history for {rolling_window_years}-year rolling windows.")
+            st.stop()
+    else:
+        leaderboard_rows = cached["single_period_rows"]
+
+    if not leaderboard_rows:
+        st.error("No presets could be simulated with the available data range.")
+        st.stop()
+
+    df_lb = pd.DataFrame(leaderboard_rows)
+
+    # Sort: higher is better for most metrics, except Max Drawdown / Volatility
+    if rank_metric == "Max Drawdown":
+        df_lb = df_lb.sort_values(rank_metric, ascending=False).reset_index(drop=True)
+    elif rank_metric == "Annual Volatility":
+        df_lb = df_lb.sort_values(rank_metric, ascending=True).reset_index(drop=True)
+    else:
+        df_lb = df_lb.sort_values(rank_metric, ascending=False).reset_index(drop=True)
+    df_lb.index = df_lb.index + 1
+    df_lb.index.name = "Rank"
+
+    # Display columns
+    if use_rolling:
+        show_cols = [
+            "Portfolio", "Period", "CAGR", "Sharpe Ratio", "Sortino Ratio",
+            "Annual Volatility", "Max Drawdown",
+            "Final Value ($)", "Total Invested ($)", "Windows",
+        ]
+        mode_label = f"{compare_mode} ({rolling_window_years}yr windows)"
+    else:
+        show_cols = [
+            "Portfolio", "CAGR", "Sharpe Ratio", "Sortino Ratio", "Calmar Ratio",
+            "Annual Volatility", "Max Drawdown", "Max DD Duration (days)",
+            "Final Value ($)", "Total Invested ($)", "Best Year", "Worst Year",
+        ]
+        mode_label = f"Single period ({actual_start} → {actual_end})"
+
+    display = df_lb[[c for c in show_cols if c in df_lb.columns]].copy()
+
+    # Format for display
+    for c in ["CAGR", "Annual Volatility", "Max Drawdown", "Best Year", "Worst Year", "Cumulative Return (TWR)"]:
+        if c in display.columns:
+            display[c] = df_lb[c].map(lambda v: pct(v) if not (isinstance(v, float) and np.isnan(v)) else "N/A")
+    for c in ["Sharpe Ratio", "Sortino Ratio", "Calmar Ratio"]:
+        if c in display.columns:
+            display[c] = df_lb[c].map(lambda v: f"{v:.3f}" if not (isinstance(v, float) and np.isnan(v)) else "N/A")
+    for c in ["Final Value ($)", "Total Invested ($)"]:
+        if c in display.columns:
+            display[c] = df_lb[c].map(lambda v: dollar(v))
+    if "Max DD Duration (days)" in display.columns:
+        display["Max DD Duration (days)"] = df_lb["Max DD Duration (days)"].map(lambda v: f"{int(v):,}")
+
+    st.subheader(f"Preset Leaderboard — {mode_label} — ranked by {rank_metric}")
+    st.dataframe(display, use_container_width=True, height=min(800, 40 + 35 * len(display)))
+
+    # Portfolio value chart (single-period mode only)
+    if not use_rolling and cached["value_series"]:
+        st.subheader("Portfolio Value — All Presets")
+        fig_all = go.Figure()
+        ranked_names = df_lb["Portfolio"].tolist()
+        for name in ranked_names:
+            if name in cached["value_series"]:
+                v = cached["value_series"][name]
+                fig_all.add_trace(go.Scatter(
+                    x=v.index, y=v, name=name, mode="lines", line=dict(width=1.5),
+                ))
+        fig_all.add_trace(go.Scatter(
+            x=cached["invested"].index, y=cached["invested"],
+            name="Total Invested", line=dict(color="gray", width=1.5, dash="dash"), opacity=0.6,
+        ))
+        fig_all.update_layout(
+            xaxis_title="Date",
+            yaxis_title=f"Value ({currency})",
+            yaxis_tickprefix=ccy_sym,
+            yaxis_tickformat=",.0f",
+            hovermode="x unified",
+            height=500,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_all, use_container_width=True)
+
+    # CSV download
+    csv_lb = df_lb[[c for c in show_cols if c in df_lb.columns]].to_csv()
+    st.download_button(
+        label="Download leaderboard as CSV",
+        data=csv_lb,
+        file_name="preset_leaderboard.csv",
+        mime="text/csv",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main — simulation & charts
 # ---------------------------------------------------------------------------
 
-if run_btn:
+elif run_btn:
     portfolio_cfgs = [p for p in portfolio_inputs if p["weights"]]
     if len(portfolio_cfgs) < 1:
         st.error("Add at least one portfolio with valid tickers and weights.")
@@ -391,8 +742,8 @@ if run_btn:
     corr = correlation_matrix(prices, portfolio_cfgs)
 
     # ================================================================ Tabs
-    tab_overview, tab_risk, tab_assets, tab_metrics = st.tabs(
-        ["Overview", "Risk & Drawdown", "Assets & Correlation", "Full Metrics"]
+    tab_overview, tab_risk, tab_assets, tab_metrics, tab_periods = st.tabs(
+        ["Overview", "Risk & Drawdown", "Assets & Correlation", "Full Metrics", "Period Analysis"]
     )
 
     # ---------------------------------------------------------------- Overview
@@ -670,6 +1021,116 @@ if run_btn:
             file_name="portfolio_metrics.csv",
             mime="text/csv",
         )
+
+    # ---------------------------------------------------------------- Period Analysis
+    with tab_periods:
+        st.subheader(f"Rolling {rolling_window_years}-Year Period Analysis")
+        st.caption(
+            f"Each portfolio is simulated across every possible {rolling_window_years}-year "
+            f"window (monthly start dates) using the same DCA settings. "
+            f"Periods are ranked by **{rolling_rank_by}** to identify the worst, median, and best starting points."
+        )
+
+        for r in results:
+            st.markdown(f"#### {r['name']}")
+            try:
+                with st.spinner(f"Analysing {r['name']}…"):
+                    rwa = rolling_window_analysis(
+                        prices, r["weights"], initial_inv, monthly_contrib,
+                        window_years=rolling_window_years,
+                        rank_by=rolling_rank_by,
+                        rebalance_annually=rebalance_annually,
+                        ddca_thresholds=r.get("ddca") or None,
+                        risk_free_rate=rf_series,
+                        fx_rate=fx_series,
+                    )
+            except ValueError as e:
+                st.warning(str(e))
+                continue
+
+            summary = rolling_window_summary(rwa, rank_by=rolling_rank_by)
+
+            # KPI cards for worst / median / best
+            period_cols = st.columns(3)
+            for col, (period_key, period_label, period_color) in zip(
+                period_cols,
+                [("worst", "Worst", "#E53935"), ("median", "Median", "#FFC107"), ("best", "Best", "#4CAF50")],
+            ):
+                s = summary[period_key]
+                start_str = s["start_date"].strftime("%Y-%m") if hasattr(s["start_date"], "strftime") else str(s["start_date"])
+                end_str = s["end_date"].strftime("%Y-%m") if hasattr(s["end_date"], "strftime") else str(s["end_date"])
+                with col:
+                    st.markdown(
+                        f'<div style="border-left: 4px solid {period_color}; padding-left: 12px;">'
+                        f"<strong>{period_label}</strong> &nbsp; {start_str} → {end_str}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    sub_cols = st.columns(3)
+                    sub_cols[0].metric("CAGR", pct(s["CAGR"]))
+                    sub_cols[1].metric("Sharpe", f"{s['Sharpe Ratio']:.3f}")
+                    sub_cols[2].metric("Max DD", pct(s["Max Drawdown"]))
+
+            # Distribution histogram
+            is_pct_metric = rolling_rank_by in (
+                "CAGR", "Max Drawdown", "Annual Volatility", "Cumulative Return (TWR)",
+            )
+            metric_vals = rwa[rolling_rank_by]
+            plot_vals = metric_vals * 100 if is_pct_metric else metric_vals
+            suffix = "%" if is_pct_metric else ""
+
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(
+                x=plot_vals, nbinsx=30,
+                marker_color=r["color"], opacity=0.75,
+                name=rolling_rank_by,
+            ))
+            for period_key, period_label, line_color, dash in [
+                ("worst",  "Worst",  "#E53935", "dash"),
+                ("median", "Median", "#FFC107", "solid"),
+                ("best",   "Best",   "#4CAF50", "dash"),
+            ]:
+                val = summary[period_key][rolling_rank_by]
+                plot_v = val * 100 if is_pct_metric else val
+                fig_hist.add_vline(
+                    x=plot_v, line_color=line_color, line_dash=dash, line_width=2,
+                    annotation_text=f"{period_label}: {plot_v:.2f}{suffix}",
+                    annotation_position="top",
+                )
+            fig_hist.update_layout(
+                title=f"{rolling_rank_by} across {len(rwa)} rolling {rolling_window_years}-year windows",
+                xaxis_title=f"{rolling_rank_by} ({suffix.strip()})" if suffix else rolling_rank_by,
+                yaxis_title="Number of windows",
+                height=350,
+                showlegend=False,
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+            # Full results table (collapsed)
+            with st.expander(f"All {len(rwa)} windows — sorted by {rolling_rank_by}"):
+                display_df = rwa.copy()
+                display_df["start_date"] = display_df["start_date"].dt.strftime("%Y-%m-%d")
+                display_df["end_date"] = display_df["end_date"].dt.strftime("%Y-%m-%d")
+                for c in ["CAGR", "Max Drawdown", "Annual Volatility", "Cumulative Return (TWR)"]:
+                    if c in display_df.columns:
+                        display_df[c] = display_df[c].map(lambda v: f"{v:.2%}")
+                for c in ["Sharpe Ratio", "Sortino Ratio"]:
+                    if c in display_df.columns:
+                        display_df[c] = display_df[c].map(lambda v: f"{v:.3f}")
+                for c in ["Final Value ($)", "Total Invested ($)"]:
+                    if c in display_df.columns:
+                        display_df[c] = display_df[c].map(lambda v: f"{ccy_sym}{v:,.0f}")
+                st.dataframe(display_df, use_container_width=True, height=400)
+
+                csv_periods = rwa.to_csv(index=False)
+                st.download_button(
+                    label=f"Download {r['name']} period data as CSV",
+                    data=csv_periods,
+                    file_name=f"rolling_periods_{r['name'].replace(' ', '_')}.csv",
+                    mime="text/csv",
+                    key=f"csv_periods_{r['name']}",
+                )
+
+            st.divider()
 
 else:
     st.info(

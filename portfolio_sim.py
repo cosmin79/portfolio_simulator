@@ -547,3 +547,165 @@ def correlation_matrix(prices: pd.DataFrame, portfolio_configs: list[dict]) -> p
 def annual_returns_table(returns: pd.Series) -> pd.Series:
     """Yearly total returns from a daily return series."""
     return returns.resample("YE").apply(lambda x: float((1 + x).prod() - 1))
+
+
+# ---------------------------------------------------------------------------
+# Rolling window analysis — worst / median / best period finder
+# ---------------------------------------------------------------------------
+
+def rolling_window_analysis(
+    prices: pd.DataFrame,
+    weights: dict[str, float],
+    initial_investment: float,
+    monthly_contribution: float,
+    window_years: int = 5,
+    rank_by: str = "CAGR",
+    rebalance_annually: bool = False,
+    ddca_thresholds: dict[str, float] | None = None,
+    risk_free_rate: RateInput = 0.04,
+    fx_rate: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Slide a fixed-length window across history and run the full DCA simulation
+    for each starting month.  Returns a DataFrame with one row per window,
+    sorted by `rank_by` ascending (worst first).
+
+    Parameters
+    ----------
+    prices              : price DataFrame covering the full available history
+    weights             : portfolio weights
+    initial_investment  : lump-sum at start of each window (in local currency)
+    monthly_contribution: monthly DCA amount (in local currency)
+    window_years        : length of each window in years (default 5)
+    rank_by             : metric key to sort by — any key from calculate_metrics
+                          (default "CAGR")
+    rebalance_annually  : passed to simulate_portfolio
+    ddca_thresholds     : passed to simulate_portfolio
+    risk_free_rate      : scalar or Series; if Series, sliced per window
+    fx_rate             : optional FX Series; sliced per window
+
+    Returns
+    -------
+    DataFrame with columns:
+        start_date, end_date, CAGR, Sharpe Ratio, Sortino Ratio,
+        Max Drawdown, Annual Volatility, Cumulative Return (TWR),
+        Final Value ($), Total Invested ($)
+    Sorted by `rank_by` ascending.
+    """
+    tickers = list(weights.keys())
+    available = prices[tickers].dropna()
+    all_dates = available.index
+
+    if len(all_dates) < 2:
+        raise ValueError("Not enough price data for rolling window analysis.")
+
+    window_days = int(window_years * 365.25)
+    first_date = all_dates[0]
+    last_possible_start = all_dates[-1] - pd.Timedelta(days=window_days)
+
+    if last_possible_start < first_date:
+        raise ValueError(
+            f"Price history ({(all_dates[-1] - first_date).days / 365.25:.1f} yrs) "
+            f"is shorter than the requested {window_years}-year window."
+        )
+
+    # Generate monthly start dates
+    start_dates = []
+    seen_months: set[tuple[int, int]] = set()
+    for d in all_dates:
+        if d > last_possible_start:
+            break
+        key = (d.year, d.month)
+        if key not in seen_months:
+            seen_months.add(key)
+            start_dates.append(d)
+
+    rows: list[dict] = []
+    for start in start_dates:
+        end = start + pd.Timedelta(days=window_days)
+        window_prices = available.loc[start:end]
+
+        if len(window_prices) < 20:  # skip tiny windows
+            continue
+
+        # Slice risk-free rate and FX for this window
+        if isinstance(risk_free_rate, pd.Series):
+            rf_window = risk_free_rate.loc[
+                (risk_free_rate.index >= start) & (risk_free_rate.index <= end)
+            ]
+            rf_arg: RateInput = rf_window if not rf_window.empty else 0.04
+        else:
+            rf_arg = risk_free_rate
+
+        if fx_rate is not None:
+            fx_window = fx_rate.loc[
+                (fx_rate.index >= start) & (fx_rate.index <= end)
+            ]
+            fx_arg: pd.Series | None = fx_window if not fx_window.empty else None
+        else:
+            fx_arg = None
+
+        vals_usd, invested, _ = simulate_portfolio(
+            window_prices,
+            weights,
+            initial_investment,
+            monthly_contribution,
+            rebalance_annually=rebalance_annually,
+            ddca_thresholds=ddca_thresholds,
+            risk_free_rate=rf_arg,
+            fx_rate=fx_arg,
+        )
+
+        # Convert to local currency if FX is involved
+        if fx_arg is not None:
+            fx_al = fx_rate.reindex(vals_usd.index, method="ffill").bfill()
+            vals = vals_usd / fx_al
+        else:
+            vals = vals_usd
+
+        rets = returns_from_simulation(vals, invested)
+        metrics = calculate_metrics(vals, invested, rets, rf_arg)
+
+        rows.append({
+            "start_date": window_prices.index[0],
+            "end_date": window_prices.index[-1],
+            "CAGR": metrics["CAGR"],
+            "Sharpe Ratio": metrics["Sharpe Ratio"],
+            "Sortino Ratio": metrics["Sortino Ratio"],
+            "Max Drawdown": metrics["Max Drawdown"],
+            "Annual Volatility": metrics["Annual Volatility"],
+            "Cumulative Return (TWR)": metrics["Cumulative Return (TWR)"],
+            "Final Value ($)": metrics["Final Value ($)"],
+            "Total Invested ($)": metrics["Total Invested ($)"],
+        })
+
+    if not rows:
+        raise ValueError("No valid windows could be constructed from the data.")
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(rank_by, ascending=True).reset_index(drop=True)
+    return df
+
+
+def rolling_window_summary(
+    analysis: pd.DataFrame,
+    rank_by: str = "CAGR",
+) -> dict[str, dict]:
+    """
+    Extract worst, median, and best periods from a rolling_window_analysis result.
+
+    Returns a dict with keys "worst", "median", "best", each containing the
+    full row as a dict.
+    """
+    df = analysis.sort_values(rank_by, ascending=True).reset_index(drop=True)
+
+    worst = df.iloc[0].to_dict()
+    best = df.iloc[-1].to_dict()
+    median_idx = len(df) // 2
+    median = df.iloc[median_idx].to_dict()
+
+    return {
+        "worst": worst,
+        "median": median,
+        "best": best,
+    }
