@@ -4,6 +4,13 @@ __pycache__/
 *.pyo
 .venv/
 
+# Test / coverage
+.coverage
+
+# Gradle
+.gradle/
+build/
+
 # Generated output
 *.png
 *.pdf
